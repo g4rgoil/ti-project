@@ -31,13 +31,13 @@ fn main() -> Result<TestResults, String> {
     let (lcp_naive, lcp_naive_time) =
         run_timed(|| lcp::naive(&input_file, &sa));
     let (lcp_kasai, lcp_kasai_time) = run_timed(|| {
-        let isa = sa::inverse(&sa);
+        let isa = sa.inverse();
         lcp::kasai(&input_file, &sa, &isa)
     });
     let (lcp_phi, lcp_phi_time) = run_timed(|| lcp::phi(&input_file, &sa));
 
-    assert_eq!(lcp_naive, lcp_kasai);
-    assert_eq!(lcp_kasai, lcp_phi);
+    assert_eq!(*lcp_naive, *lcp_kasai);
+    assert_eq!(*lcp_kasai, *lcp_phi);
 
     Ok(TestResults {
         sa_time,

@@ -1,36 +1,51 @@
+use std::ops::Deref;
+
 use crate::TextExt;
 
-pub type SuffixArray = Box<[usize]>;
-pub type InverseSuffixArray = Box<[usize]>;
-pub type PhiArray = Box<[usize]>;
+/// TODO: Invariants:
+/// - sa is permutation of (0, sa.len())
+#[derive(Debug, Clone)]
+pub struct SuffixArray(Box<[usize]>);
+
+impl Deref for SuffixArray {
+    type Target = [usize];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl SuffixArray {
+    pub fn inverse(&self) -> InverseSuffixArray {
+        // TODO use MaybeUninit for optimization
+
+        let mut isa = vec![0; self.len()];
+        for (i, sa_i) in self.iter().enumerate() {
+            // TODO elide bound checks
+            isa[*sa_i] = i;
+        }
+
+        InverseSuffixArray(isa.into_boxed_slice())
+    }
+}
+
+/// TODO: Invariants:
+/// - sa is permutation of (0, sa.len())
+#[derive(Debug, Clone)]
+pub struct InverseSuffixArray(Box<[usize]>);
+
+impl Deref for InverseSuffixArray {
+    type Target = [usize];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 pub fn naive<T: Ord>(text: &[T]) -> SuffixArray {
     let mut sa: Box<_> = (0..text.len()).collect();
     sa.sort_by(|l, r| text.suffix(*l).cmp(text.suffix(*r)));
-    sa
-}
-
-pub fn inverse(sa: &[usize]) -> InverseSuffixArray {
-    // TODO use MaybeUninit for optimization
-
-    let mut isa = vec![0; sa.len()];
-    for (i, sa_i) in sa.iter().enumerate() {
-        // TODO elide bound checks
-        isa[*sa_i] = i;
-    }
-
-    isa.into_boxed_slice()
-}
-
-pub fn phi(sa: &[usize]) -> PhiArray {
-    // TODO use MaybeUninit for optimization
-
-    let mut phi = vec![0; sa.len()];
-    for (i, &sa_i) in sa.iter().enumerate().skip(1) {
-        phi[sa_i] = sa[i - 1];
-    }
-
-    phi.into_boxed_slice()
+    SuffixArray(sa)
 }
 
 #[cfg(test)]
@@ -52,6 +67,8 @@ mod test {
 
     #[test]
     fn test_isa_empty() {
-        assert_eq!(*inverse(&[]), []);
+        let sa = SuffixArray(Box::new([]));
+
+        assert_eq!(*sa.inverse(), []);
     }
 }
