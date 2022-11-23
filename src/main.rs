@@ -1,3 +1,4 @@
+mod lcp_array;
 mod suffix_array;
 
 use std::{
@@ -6,6 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use lcp_array as lcp;
 use suffix_array as sa;
 
 fn main() -> Result<TestResults, String> {
@@ -25,10 +27,12 @@ fn main() -> Result<TestResults, String> {
     let (sa, sa_time) = run_timed(|| sa::naive(&input_file));
     // TODO sa memory
 
+    let (_, lcp_naive_time) = run_timed(|| lcp::naive(&input_file, &sa));
+
     Ok(TestResults {
         sa_time,
         sa_memory: Default::default(),
-        lcp_naive_time: Default::default(),
+        lcp_naive_time,
         lcp_kasai_time: Default::default(),
         lcp_phi_time: Default::default(),
     })
