@@ -1,5 +1,6 @@
 use std::iter::zip;
 
+use crate::suffix_array as sa;
 use crate::TextExt;
 
 pub type LCPArray = Box<[usize]>;
@@ -40,6 +41,24 @@ pub fn kasai<T: Ord>(text: &[T], sa: &[usize], isa: &[usize]) -> LCPArray {
     lcp.into_boxed_slice()
 }
 
+pub fn phi<T: Ord>(text: &[T], sa: &[usize]) -> LCPArray {
+    let mut phi = sa::phi(sa);
+
+    let mut l = 0;
+
+    for i in 0..sa.len() {
+        let j = phi[i];
+        let suffix_i_l = text.suffix(i + l);
+        let suffix_j_l = text.suffix(j + l);
+        l += common_prefix(suffix_i_l, suffix_j_l);
+
+        phi[i] = l;
+        l = l.saturating_sub(1);
+    }
+
+    sa.iter().map(|&sa_i| phi[sa_i]).collect()
+}
+
 fn common_prefix<T: Ord>(lhs: &[T], rhs: &[T]) -> usize {
     zip(lhs, rhs).take_while(|(l, r)| l == r).count()
 }
@@ -52,6 +71,7 @@ mod test {
     fn test_empty_text() {
         assert_eq!(*naive(b"", &[]), []);
         assert_eq!(*kasai(b"", &[], &[]), []);
+        assert_eq!(*phi(b"", &[]), []);
     }
 
     #[test]
@@ -63,5 +83,6 @@ mod test {
 
         assert_eq!(*naive(text, &sa), lcp);
         assert_eq!(*kasai(text, &sa, &isa), lcp);
+        assert_eq!(*phi(text, &sa), lcp);
     }
 }

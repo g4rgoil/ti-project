@@ -2,6 +2,7 @@ use crate::TextExt;
 
 pub type SuffixArray = Box<[usize]>;
 pub type InverseSuffixArray = Box<[usize]>;
+pub type PhiArray = Box<[usize]>;
 
 pub fn naive<T: Ord>(text: &[T]) -> SuffixArray {
     let mut sa: Box<_> = (0..text.len()).collect();
@@ -19,6 +20,17 @@ pub fn inverse(sa: &[usize]) -> InverseSuffixArray {
     }
 
     isa.into_boxed_slice()
+}
+
+pub fn phi(sa: &[usize]) -> PhiArray {
+    // TODO use MaybeUninit for optimization
+
+    let mut phi = vec![0; sa.len()];
+    for (i, &sa_i) in sa.iter().enumerate().skip(1) {
+        phi[sa_i] = sa[i - 1];
+    }
+
+    phi.into_boxed_slice()
 }
 
 #[cfg(test)]

@@ -12,6 +12,7 @@ use suffix_array as sa;
 
 fn main() -> Result<TestResults, String> {
     // TODO Error enum
+    // TODO use u32 instead of usize if possible
 
     fn run_timed<T>(f: impl FnOnce() -> T) -> (T, Duration) {
         let before = Instant::now();
@@ -27,18 +28,23 @@ fn main() -> Result<TestResults, String> {
     let (sa, sa_time) = run_timed(|| sa::naive(&input_file));
     // TODO sa memory
 
-    let (_, lcp_naive_time) = run_timed(|| lcp::naive(&input_file, &sa));
-    let (_, lcp_kasai_time) = run_timed(|| {
+    let (lcp_naive, lcp_naive_time) =
+        run_timed(|| lcp::naive(&input_file, &sa));
+    let (lcp_kasai, lcp_kasai_time) = run_timed(|| {
         let isa = sa::inverse(&sa);
         lcp::kasai(&input_file, &sa, &isa)
     });
+    let (lcp_phi, lcp_phi_time) = run_timed(|| lcp::phi(&input_file, &sa));
+
+    assert_eq!(lcp_naive, lcp_kasai);
+    assert_eq!(lcp_kasai, lcp_phi);
 
     Ok(TestResults {
         sa_time,
         sa_memory: Default::default(),
         lcp_naive_time,
         lcp_kasai_time,
-        lcp_phi_time: Default::default(),
+        lcp_phi_time,
     })
 }
 
