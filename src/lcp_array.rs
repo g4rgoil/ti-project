@@ -11,10 +11,37 @@ pub fn naive<T: Ord>(text: &[T], sa: &[usize]) -> LCPArray {
     lcp.extend(text.first().map(|_| 0));
 
     lcp.extend(zip(sa, sa.iter().skip(1)).map(|(i, j)| {
-        zip(text.suffix(*i), text.suffix(*j)).take_while(|(l, r)| l == r).count()
+        let suffix_i = text.suffix(*i);
+        let suffix_j = text.suffix(*j);
+        common_prefix(suffix_i, suffix_j)
     }));
 
     lcp.into_boxed_slice()
+}
+
+pub fn kasai<T: Ord>(text: &[T], sa: &[usize], isa: &[usize]) -> LCPArray {
+    assert_eq!(text.len(), sa.len());
+
+    let mut lcp = vec![0; text.len()];
+
+    let mut l = 0;
+    for (i, &isa_i) in isa.iter().enumerate() {
+        if isa_i != 0 {
+            let j = sa[isa_i - 1];
+            let suffix_i_l = text.suffix(i + l);
+            let suffix_j_l = text.suffix(j + l);
+            l += common_prefix(suffix_i_l, suffix_j_l);
+
+            lcp[isa_i] = l;
+            l = l.saturating_sub(1);
+        }
+    }
+
+    lcp.into_boxed_slice()
+}
+
+fn common_prefix<T: Ord>(lhs: &[T], rhs: &[T]) -> usize {
+    zip(lhs, rhs).take_while(|(l, r)| l == r).count()
 }
 
 #[cfg(test)]
@@ -24,14 +51,17 @@ mod test {
     #[test]
     fn test_empty_text() {
         assert_eq!(*naive(b"", &[]), []);
+        assert_eq!(*kasai(b"", &[], &[]), []);
     }
 
     #[test]
     fn test_simple_text() {
         let text = b"banana";
         let sa = [5, 3, 1, 0, 4, 2];
+        let isa = [3, 2, 5, 1, 4, 0];
         let lcp = [0, 1, 3, 0, 0, 2];
 
         assert_eq!(*naive(text, &sa), lcp);
+        assert_eq!(*kasai(text, &sa, &isa), lcp);
     }
 }
