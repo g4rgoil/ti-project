@@ -1,19 +1,23 @@
 use std::iter::{Enumerate, Peekable, Rev};
 use std::slice;
 
-use self::buckets::{Buckets, U8Alphabet};
+use self::alphabet::{Alphabet, Symbol, U8Alphabet};
+use self::buckets::Buckets;
 use super::SuffixArray;
 use crate::TextExt;
 
+pub(super) fn sais(text: &[u8]) -> SuffixArray { construct(text, U8Alphabet) }
 
-pub(super) fn construct(text: &[u8]) -> SuffixArray {
+fn construct<A: Alphabet>(text: &[A::Symbol], alphabet: A) -> SuffixArray {
     let mut sa = vec![0; text.len()];
 
     // TODO sort these using sais
     let mut lms: Box<[_]> = LMSIter::new(text).collect();
     lms.sort_by_key(|i| text.suffix(*i));
 
-    let mut buckets = Buckets::new(text, U8Alphabet);
+    dbg!(lms.len() as f64 / text.len() as f64);
+
+    let mut buckets = Buckets::new(text, alphabet);
 
     // put sorted LMS-suffixes at the end of buckets
     // TODO this is ugly as the night
@@ -21,7 +25,7 @@ pub(super) fn construct(text: &[u8]) -> SuffixArray {
     for (symbol, bucket_end) in buckets.end().iter().enumerate().rev() {
         let mut idx = *bucket_end;
         'inner: while let Some(&&i) = lms_iter.peek() {
-            if text[i] != symbol as u8 {
+            if text[i].as_usize() != symbol {
                 break 'inner;
             }
             lms_iter.next();
@@ -36,10 +40,10 @@ pub(super) fn construct(text: &[u8]) -> SuffixArray {
     SuffixArray(sa.into_boxed_slice())
 }
 
-fn induce_l_suffixes(
-    text: &[u8],
+fn induce_l_suffixes<A: Alphabet>(
+    text: &[A::Symbol],
     sa: &mut [usize],
-    buckets: &mut Buckets<U8Alphabet>,
+    buckets: &mut Buckets<A>,
 ) {
     assert_eq!(text.len(), sa.len());
 
@@ -60,10 +64,10 @@ fn induce_l_suffixes(
     }
 }
 
-fn induce_s_suffixes(
-    text: &[u8],
+fn induce_s_suffixes<A: Alphabet>(
+    text: &[A::Symbol],
     sa: &mut [usize],
-    buckets: &mut Buckets<U8Alphabet>,
+    buckets: &mut Buckets<A>,
 ) {
     assert_eq!(text.len(), sa.len());
 
@@ -80,13 +84,13 @@ fn induce_s_suffixes(
 }
 
 
-struct LMSIter<'a> {
-    text: Peekable<Rev<Enumerate<slice::Iter<'a, u8>>>>,
+struct LMSIter<'a, S> {
+    text: Peekable<Rev<Enumerate<slice::Iter<'a, S>>>>,
     is_s_suffix: bool,
 }
 
-impl<'a> LMSIter<'a> {
-    fn new(text: &'a [u8]) -> LMSIter<'a> {
+impl<'a, S> LMSIter<'a, S> {
+    fn new(text: &'a [S]) -> Self {
         LMSIter {
             text: text.iter().enumerate().rev().peekable(),
             is_s_suffix: false,
@@ -94,7 +98,7 @@ impl<'a> LMSIter<'a> {
     }
 }
 
-impl<'a> Iterator for LMSIter<'a> {
+impl<'a, S: Symbol> Iterator for LMSIter<'a, S> {
     type Item = usize;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -116,25 +120,30 @@ impl<'a> Iterator for LMSIter<'a> {
     }
 }
 
-#[allow(dead_code)]
-mod buckets {
-    use std::{
-        iter::zip,
-        mem,
-        ops::{Deref, IndexMut},
-    };
+pub(super) mod alphabet {
+    use std::ops::IndexMut;
 
+    pub(super) trait Symbol: Sized + Copy + Ord {
+        fn as_usize(self) -> usize;
+    }
+
+    impl Symbol for u8 {
+        fn as_usize(self) -> usize { self.into() }
+    }
+
+    impl Symbol for usize {
+        fn as_usize(self) -> usize { self }
+    }
 
     pub(super) trait Alphabet {
-        // TODO maybe use another trait for this?!
         type Buckets: IndexMut<usize, Output = usize>
             + AsRef<[usize]>
             + AsMut<[usize]>;
-        type Symbol: Sized + Copy;
+        type Symbol: Symbol;
+
+        fn size(&self) -> usize;
 
         fn buckets(&self) -> Self::Buckets;
-
-        fn as_usize(symbol: Self::Symbol) -> usize;
     }
 
     pub(super) struct U8Alphabet;
@@ -143,9 +152,9 @@ mod buckets {
         type Buckets = [usize; u8::MAX as usize + 1];
         type Symbol = u8;
 
-        fn buckets(&self) -> Self::Buckets { [0; u8::MAX as usize + 1] }
+        fn size(&self) -> usize { u8::MAX as usize + 1 }
 
-        fn as_usize(symbol: Self::Symbol) -> usize { symbol.into() }
+        fn buckets(&self) -> Self::Buckets { [0; u8::MAX as usize + 1] }
     }
 
     pub(super) struct UsizeAlphabet {
@@ -156,10 +165,17 @@ mod buckets {
         type Buckets = Vec<usize>;
         type Symbol = usize;
 
-        fn buckets(&self) -> Self::Buckets { vec![0; self.size] }
+        fn size(&self) -> usize { self.size }
 
-        fn as_usize(symbol: Self::Symbol) -> usize { symbol }
+        fn buckets(&self) -> Self::Buckets { vec![0; self.size] }
     }
+}
+
+#[allow(dead_code)]
+mod buckets {
+    use std::{iter::zip, mem, ops::Deref};
+
+    use super::alphabet::{Alphabet, Symbol};
 
     #[must_use]
     pub(super) struct Buckets<A: Alphabet> {
@@ -172,7 +188,7 @@ mod buckets {
         pub fn new(text: &[A::Symbol], alphabet: A) -> Self {
             let mut histogram = alphabet.buckets();
             for c in text {
-                histogram[A::as_usize(*c)] += 1;
+                histogram[c.as_usize()] += 1;
             }
 
             let mut bucket_begin = alphabet.buckets();
@@ -196,17 +212,17 @@ mod buckets {
 
         pub fn end(&self) -> &[usize] { self.end.as_ref() }
 
-        pub fn get(&self, symbol: u8) -> Bucket<&usize> {
+        pub fn get(&self, symbol: A::Symbol) -> Bucket<&usize> {
             Bucket {
-                begin: &self.begin[symbol as usize],
-                end: &self.end[symbol as usize],
+                begin: &self.begin[symbol.as_usize()],
+                end: &self.end[symbol.as_usize()],
             }
         }
 
-        pub fn get_mut(&mut self, symbol: u8) -> Bucket<&mut usize> {
+        pub fn get_mut(&mut self, symbol: A::Symbol) -> Bucket<&mut usize> {
             Bucket {
-                begin: &mut self.begin[symbol as usize],
-                end: &mut self.end[symbol as usize],
+                begin: &mut self.begin[symbol.as_usize()],
+                end: &mut self.end[symbol.as_usize()],
             }
         }
     }
@@ -238,11 +254,13 @@ mod buckets {
 
 #[cfg(test)]
 mod test {
-    use super::*;
+    use super::{alphabet::U8Alphabet, *};
+
+    const A: U8Alphabet = U8Alphabet;
 
     #[test]
     fn test_lms_iter_empty() {
-        let mut iter = LMSIter::new(&[]);
+        let mut iter = LMSIter::<u8>::new(&[]);
         assert_eq!(iter.next(), None);
     }
 
@@ -258,20 +276,20 @@ mod test {
     fn test_sais_null_terminated() {
         let text = b"ababcabcabba\0";
         let sa = [12, 11, 0, 8, 5, 2, 10, 1, 9, 6, 3, 7, 4];
-        assert_eq!(*construct(text), sa);
+        assert_eq!(*construct(text, A), sa);
     }
 
     #[test]
     fn test_sais_not_terminated() {
         let text = b"banana";
         let sa = [5, 3, 1, 0, 4, 2];
-        assert_eq!(*construct(text), sa);
+        assert_eq!(*construct(text, A), sa);
     }
 
     #[test]
     fn test_sais_all_a() {
         let text = b"aaaaaaaa";
         let sa = [7, 6, 5, 4, 3, 2, 1, 0];
-        assert_eq!(*construct(text), sa);
+        assert_eq!(*construct(text, A), sa);
     }
 }

@@ -66,7 +66,7 @@ pub fn naive<T: Ord>(text: &[T]) -> SuffixArray {
 }
 
 pub fn sais(text: &[u8]) -> SuffixArray {
-    let sa = sais::construct(text);
+    let sa = sais::sais(text);
     assert!(sa.is_correct(text));
     sa
 }
