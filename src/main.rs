@@ -1,3 +1,6 @@
+// TODO get rid of unstable features
+#![feature(array_windows)]
+
 mod lcp_array;
 mod suffix_array;
 
@@ -21,21 +24,27 @@ fn main() -> Result<TestResults, String> {
         (result, elapsed)
     }
 
-    let input_path =
-        env::args().nth(1).ok_or("expected exactly 1 argument".to_owned())?;
+    let input_path = env::args()
+        .nth(1)
+        .ok_or_else(|| "expected exactly 1 argument".to_owned())?;
     let input_file = fs::read(input_path).map_err(|e| e.to_string())?;
 
-    let (sa, sa_time) = run_timed(|| sa::naive(&input_file));
+    println!("SA (SAIS)");
+    let (sa, sa_time) = run_timed(|| sa::sais(&input_file));
     // TODO sa memory
 
+    println!("LCP (naive)");
     let (lcp_naive, lcp_naive_time) =
         run_timed(|| lcp::naive(&input_file, &sa));
+    println!("LCP (kasai)");
     let (lcp_kasai, lcp_kasai_time) = run_timed(|| {
         let isa = sa.inverse();
         lcp::kasai(&input_file, &sa, &isa)
     });
+    println!("LCP (phi)");
     let (lcp_phi, lcp_phi_time) = run_timed(|| lcp::phi(&input_file, &sa));
 
+    println!("Assert EQ");
     assert_eq!(*lcp_naive, *lcp_kasai);
     assert_eq!(*lcp_kasai, *lcp_phi);
 
@@ -84,7 +93,5 @@ pub trait TextExt<T: Ord> {
 }
 
 impl<T: Ord> TextExt<T> for [T] {
-    fn suffix(&self, i: usize) -> &Self {
-        &self[i..]
-    }
+    fn suffix(&self, i: usize) -> &Self { &self[i..] }
 }

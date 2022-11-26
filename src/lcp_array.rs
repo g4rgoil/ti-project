@@ -11,18 +11,20 @@ pub struct LCPArray(Box<[usize]>);
 impl Deref for LCPArray {
     type Target = [usize];
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
+    fn deref(&self) -> &Self::Target { &self.0 }
 }
 
 pub fn naive<T: Ord>(text: &[T], sa: &SuffixArray) -> LCPArray {
     assert_eq!(text.len(), sa.len());
 
+    // TODO don't use extend
+
     let mut lcp = Vec::with_capacity(text.len());
     lcp.extend(text.first().map(|_| 0));
 
-    lcp.extend(zip(sa.iter(), sa.iter().skip(1)).map(|(i, j)| {
+
+    // TODO lcp.extend(zip(sa.iter(), sa.iter().skip(1)).map(|(i, j)| {
+    lcp.extend(sa.array_windows::<2>().map(|[i, j]| {
         let suffix_i = text.suffix(*i);
         let suffix_j = text.suffix(*j);
         common_prefix(suffix_i, suffix_j)
@@ -62,6 +64,7 @@ pub fn phi<T: Ord>(text: &[T], sa: &SuffixArray) -> LCPArray {
     let mut phi = vec![0; sa.len()];
     for (i, &sa_i) in sa.iter().enumerate().skip(1) {
         phi[sa_i] = sa[i - 1];
+        // unsafe { *phi.get_unchecked_mut(sa_i) = sa[i - 1] };
     }
 
     let mut l = 0;
