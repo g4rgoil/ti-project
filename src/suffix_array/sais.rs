@@ -1,7 +1,7 @@
 use std::iter::{Enumerate, Peekable, Rev};
 use std::slice;
 
-use self::buckets::Buckets;
+use self::buckets::{Buckets, U8Alphabet};
 use super::SuffixArray;
 use crate::TextExt;
 
@@ -13,7 +13,7 @@ pub(super) fn construct(text: &[u8]) -> SuffixArray {
     let mut lms: Box<[_]> = LMSIter::new(text).collect();
     lms.sort_by_key(|i| text.suffix(*i));
 
-    let mut buckets = Buckets::new(text);
+    let mut buckets = Buckets::new(text, U8Alphabet);
 
     // put sorted LMS-suffixes at the end of buckets
     // TODO this is ugly as the night
@@ -33,12 +33,14 @@ pub(super) fn construct(text: &[u8]) -> SuffixArray {
     induce_l_suffixes(text, &mut sa, &mut buckets);
     induce_s_suffixes(text, &mut sa, &mut buckets);
 
-    // TODO remove
-    // debug_assert!(is_valid_suffix_array(text, &sa));
     SuffixArray(sa.into_boxed_slice())
 }
 
-fn induce_l_suffixes(text: &[u8], sa: &mut [usize], buckets: &mut Buckets) {
+fn induce_l_suffixes(
+    text: &[u8],
+    sa: &mut [usize],
+    buckets: &mut Buckets<U8Alphabet>,
+) {
     assert_eq!(text.len(), sa.len());
 
     // Emulate S* suffix of guardian element
@@ -48,33 +50,35 @@ fn induce_l_suffixes(text: &[u8], sa: &mut [usize], buckets: &mut Buckets) {
 
     for i in 0..sa.len() {
         if sa[i] != 0 {
-            let is_l_type = text[sa[i] - 1] > text[sa[i]]
-                || (text[sa[i] - 1] == text[sa[i]]
-                    && i < buckets.get(text[sa[i]]).begin());
+            let ord = text[sa[i] - 1].cmp(&text[sa[i]]);
+            let bucket = buckets.get(text[sa[i]]);
 
-            if is_l_type {
+            if ord.is_gt() || (ord.is_eq() && i < bucket.begin()) {
                 sa[buckets.get_mut(text[sa[i] - 1]).take_first()] = sa[i] - 1;
             }
         }
     }
 }
 
-fn induce_s_suffixes(text: &[u8], sa: &mut [usize], buckets: &mut Buckets) {
+fn induce_s_suffixes(
+    text: &[u8],
+    sa: &mut [usize],
+    buckets: &mut Buckets<U8Alphabet>,
+) {
     assert_eq!(text.len(), sa.len());
 
     for i in (0..sa.len()).rev() {
         if sa[i] != 0 {
-            let is_s_type = text[sa[i] - 1] < text[sa[i]]
-                || (text[sa[i] - 1] == text[sa[i]]
-                    && i >= buckets.get(text[sa[i]]).begin());
+            let ord = text[sa[i] - 1].cmp(&text[sa[i]]);
+            let bucket = buckets.get(text[sa[i]]);
 
-            if is_s_type {
-                // TODO bucket_end is never actually read again ...
+            if ord.is_lt() || (ord.is_eq() && i >= bucket.begin()) {
                 sa[buckets.get_mut(text[sa[i] - 1]).take_last()] = sa[i] - 1;
             }
         }
     }
 }
+
 
 struct LMSIter<'a> {
     text: Peekable<Rev<Enumerate<slice::Iter<'a, u8>>>>,
@@ -114,39 +118,83 @@ impl<'a> Iterator for LMSIter<'a> {
 
 #[allow(dead_code)]
 mod buckets {
-    use std::{mem, ops::Deref};
+    use std::{
+        iter::zip,
+        mem,
+        ops::{Deref, IndexMut},
+    };
 
-    #[must_use]
-    pub(super) struct Buckets {
-        begin: [usize; Self::SIZE],
-        end: [usize; Self::SIZE],
+
+    pub(super) trait Alphabet {
+        // TODO maybe use another trait for this?!
+        type Buckets: IndexMut<usize, Output = usize>
+            + AsRef<[usize]>
+            + AsMut<[usize]>;
+        type Symbol: Sized + Copy;
+
+        fn buckets(&self) -> Self::Buckets;
+
+        fn as_usize(symbol: Self::Symbol) -> usize;
     }
 
-    impl Buckets {
-        pub const SIZE: usize = u8::MAX as usize + 1;
+    pub(super) struct U8Alphabet;
 
-        pub fn new(text: &[u8]) -> Self {
-            let mut histogram = [0_usize; Self::SIZE];
+    impl Alphabet for U8Alphabet {
+        type Buckets = [usize; u8::MAX as usize + 1];
+        type Symbol = u8;
+
+        fn buckets(&self) -> Self::Buckets { [0; u8::MAX as usize + 1] }
+
+        fn as_usize(symbol: Self::Symbol) -> usize { symbol.into() }
+    }
+
+    pub(super) struct UsizeAlphabet {
+        size: usize,
+    }
+
+    impl Alphabet for UsizeAlphabet {
+        type Buckets = Vec<usize>;
+        type Symbol = usize;
+
+        fn buckets(&self) -> Self::Buckets { vec![0; self.size] }
+
+        fn as_usize(symbol: Self::Symbol) -> usize { symbol }
+    }
+
+    #[must_use]
+    pub(super) struct Buckets<A: Alphabet> {
+        alphabet: A,
+        begin: A::Buckets,
+        end: A::Buckets,
+    }
+
+    impl<A: Alphabet> Buckets<A> {
+        pub fn new(text: &[A::Symbol], alphabet: A) -> Self {
+            let mut histogram = alphabet.buckets();
             for c in text {
-                histogram[*c as usize] += 1;
+                histogram[A::as_usize(*c)] += 1;
             }
 
+            let mut bucket_begin = alphabet.buckets();
             let sum = &mut 0;
-            let bucket_start = histogram.map(|n| mem::replace(sum, *sum + n));
+            for (begin, n) in zip(bucket_begin.as_mut(), histogram.as_ref()) {
+                *begin = mem::replace(sum, *sum + n);
+            }
 
-            // TODO reuse histogram here
+            // Reuse histogram for bucket ends
+            let mut bucket_end = histogram;
             let mut sum = 0;
-            let bucket_end = histogram.map(|n| {
-                sum += n;
-                sum
-            });
+            for end in bucket_end.as_mut() {
+                sum += *end;
+                *end = sum;
+            }
 
-            Buckets { begin: bucket_start, end: bucket_end }
+            Buckets { begin: bucket_begin, end: bucket_end, alphabet }
         }
 
-        pub fn begin(&self) -> &[usize; Self::SIZE] { &self.begin }
+        pub fn begin(&self) -> &[usize] { self.begin.as_ref() }
 
-        pub fn end(&self) -> &[usize; Self::SIZE] { &self.end }
+        pub fn end(&self) -> &[usize] { self.end.as_ref() }
 
         pub fn get(&self, symbol: u8) -> Bucket<&usize> {
             Bucket {
