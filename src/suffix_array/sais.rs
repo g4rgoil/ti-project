@@ -122,8 +122,6 @@ fn induce_l_suffixes<A: Alphabet>(
     sa: &mut [usize],
     buckets: &mut Buckets<A>,
 ) {
-    assert_eq!(text.len(), sa.len());
-
     // Emulate S* suffix of guardian element
     if let Some(last) = text.last() {
         sa[buckets.get_mut(*last).take_first()] = sa.len() - 1;
@@ -146,8 +144,6 @@ fn induce_s_suffixes<A: Alphabet>(
     sa: &mut [usize],
     buckets: &mut Buckets<A>,
 ) {
-    assert_eq!(text.len(), sa.len());
-
     for i in (0..sa.len()).rev() {
         if sa[i] != 0 {
             let ord = text[sa[i] - 1].cmp(&text[sa[i]]);
