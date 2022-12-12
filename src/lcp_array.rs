@@ -64,18 +64,15 @@ pub fn phi<T: Ord>(text: &[T], sa: &SuffixArray) -> LCPArray {
     let mut phi = vec![0; sa.len()];
     for (i, &sa_i) in sa.iter().enumerate().skip(1) {
         phi[sa_i] = sa[i - 1];
-        // unsafe { *phi.get_unchecked_mut(sa_i) = sa[i - 1] };
     }
 
     let mut l = 0;
-    for i in 0..sa.len() {
-        let j = phi[i];
+    for (i, j) in phi.iter_mut().enumerate() {
         let suffix_i_l = text.suffix(i + l);
-        let suffix_j_l = text.suffix(j + l);
-        l += common_prefix(suffix_i_l, suffix_j_l);
+        let suffix_j_l = text.suffix(*j + l);
 
-        phi[i] = l;
-        l = l.saturating_sub(1);
+        *j = l + common_prefix(suffix_i_l, suffix_j_l);
+        l = j.saturating_sub(1);
     }
 
     LCPArray(sa.iter().map(|&sa_i| phi[sa_i]).collect())
@@ -111,5 +108,29 @@ mod test {
         assert_eq!(*naive(text, &sa), lcp);
         assert_eq!(*kasai(text, &sa, &isa), lcp);
         assert_eq!(*phi(text, &sa), lcp);
+    }
+
+    #[test]
+    #[ignore = "need to fix handling of first char"]
+    fn test_lcp_slides() {
+        let text = b"ababcabcabba";
+        let sa = &sa::naive(text);
+        let isa = &sa.inverse();
+        let naive_lcp = naive(text, &sa);
+
+        assert_eq!(*kasai(text, &sa, &isa), *naive_lcp);
+        assert_eq!(*phi(text, &sa), *naive_lcp);
+    }
+
+    #[test]
+    #[ignore = "need to fix handling of first char"]
+    fn test_lcp_wikipedia() {
+        let text = b"immissiissippi";
+        let sa = &sa::naive(text);
+        let isa = &sa.inverse();
+        let naive_lcp = naive(text, &sa);
+
+        assert_eq!(*kasai(text, &sa, &isa), *naive_lcp);
+        assert_eq!(*phi(text, &sa), *naive_lcp);
     }
 }

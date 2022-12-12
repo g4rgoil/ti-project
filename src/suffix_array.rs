@@ -32,6 +32,7 @@ impl SuffixArray {
         InverseSuffixArray(isa.into_boxed_slice())
     }
 
+    // TODO move to test module
     #[allow(unused)]
     pub fn verify<T: Ord + Debug>(&self, text: &[T]) {
         assert!(zip(self.0.iter(), self.0.iter().skip(1))

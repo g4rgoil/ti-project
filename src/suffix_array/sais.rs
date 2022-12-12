@@ -7,46 +7,26 @@ use super::SuffixArray;
 use crate::sa::sais::lms::lms_str_from_suffix;
 use crate::TextExt;
 
-pub(super) fn sais(text: &[u8]) -> SuffixArray { sais_impl(text, ByteAlphabet) }
+pub(super) fn sais(text: &[u8]) -> SuffixArray {
+    SuffixArray(sais_impl(text, ByteAlphabet))
+}
 
 
 // TODO return Box<[]> instead here?
-fn sais_impl<A: Alphabet>(text: &[A::Symbol], alphabet: A) -> SuffixArray {
+fn sais_impl<A: Alphabet>(text: &[A::Symbol], alphabet: A) -> Box<[usize]> {
     // TODO fix this
-    if text.len() == 0 {
-        return SuffixArray(Box::new([]));
-    } else if text.len() == 1 {
-        return SuffixArray(vec![0].into_boxed_slice());
+    if text.is_empty() {
+        return Box::new([]);
     }
 
     let mut sa = vec![0; text.len()];
     let mut buckets = Buckets::new(text, alphabet);
 
-    // TODO copying the buckets entirely is not necessary
-    // Put LMS-suffixes in text-order at the end of buckets
-    let mut lms_buckets = buckets.clone();
-    let mut foo_buckets = buckets.clone();
-    let mut lms_count = 0;
-    for i in LMSIter::new(text) {
-        sa[lms_buckets.get_mut(text[i]).take_last()] = i;
-        lms_count += 1;
-    }
+    // TODO the handling of buckets is weird here
+    let (mut lms_buckets, lms_sorted) =
+        sort_lms_substrs(text, &mut sa, &mut buckets);
 
-    // Induce partial order among LMS-substrings
-    induce_l_suffixes(text, &mut sa, &mut buckets);
-    induce_s_suffixes(text, &mut sa, &mut buckets);
-
-    // Collect LMS-prefixes, sorted by LMS-substrings
-    // NOTE disgregarding the last bucket here
-    let mut lms_sorted = Vec::with_capacity(lms_count);
-    lms_sorted.extend(
-        zip(buckets.end(), lms_buckets.begin().iter().skip(1))
-            .flat_map(|(&i, &j)| &sa[i..j])
-            .filter(|&&i| i > 0 && text[i - 1] > text[i])  // TODO naja .....
-            .copied(),
-    );
-
-    // // Write rank of LMS-substring into the suffix array
+    // Write rank of LMS-substring into the suffix array
     let mut iter = lms_sorted
         .iter()
         .map(|i| (i, lms_str_from_suffix(text.suffix(*i))))
@@ -60,7 +40,6 @@ fn sais_impl<A: Alphabet>(text: &[A::Symbol], alphabet: A) -> SuffixArray {
         }
     }
 
-
     // TODO case distinction alphabet_size ?= text_size
     // TODO use u8, u16, u32, u64 depending on lms_count
     // TODO Move this to the alphabet trait
@@ -68,7 +47,8 @@ fn sais_impl<A: Alphabet>(text: &[A::Symbol], alphabet: A) -> SuffixArray {
     let lms_alphabet = IntegerAlphabet::new(lms_sorted.len());
     let mut lms_suffixes = lms_sorted;
 
-    // TODO instead of using LMS iter here, zero first, and just check for non-zero
+    // TODO benchmark what is better here (don't forget sa.fill(MAX))
+    // .zip(sa.iter().enumerate().rev().filter(|(_, x)| **x != usize::MAX))
     for ((dst_symbol, dst_index), i) in (lms_text.iter_mut().rev())
         .zip(lms_suffixes.iter_mut().rev())
         .zip(LMSIter::new(text))
@@ -77,23 +57,65 @@ fn sais_impl<A: Alphabet>(text: &[A::Symbol], alphabet: A) -> SuffixArray {
         *dst_index = i;
     }
 
-    let SuffixArray(lms_sa) = sais_impl(&lms_text, lms_alphabet);
-
     sa.fill(0);
+    let lms_sa = sais_impl(&lms_text, lms_alphabet);
 
-    // put the sorted LMS-suffixes at the end of the buckets
-    let mut iter = lms_sa.iter();
-    for (&i, &j) in zip(lms_buckets.end(), &lms_buckets.begin()[1..]) {
-        for (dst, n) in zip(&mut sa[i..j], iter.by_ref()) {
+    // Put the sorted LMS-suffixes at the end of the buckets
+    let mut lms_iter = lms_sa.iter();
+    let lms_bucket_begin = lms_buckets.end.as_ref();
+    let lms_bucket_end = &lms_buckets.begin.as_ref()[1..];
+
+    for (&i, &j) in zip(lms_bucket_begin, lms_bucket_end) {
+        for (dst, n) in zip(&mut sa[i..j], lms_iter.by_ref()) {
             *dst = lms_suffixes[*n];
         }
     }
 
-    induce_l_suffixes(text, &mut sa, &mut foo_buckets);
-    induce_s_suffixes(text, &mut sa, &mut foo_buckets);
+    // Reset LMS buckets to initial state
+    let (last, head) = lms_buckets.end.as_mut().split_last_mut().unwrap();
+    head.clone_from_slice(&lms_buckets.begin.as_ref()[1..]);
+    *last = text.len();
 
-    SuffixArray(sa.into_boxed_slice())
+    induce_l_suffixes(text, &mut sa, &mut lms_buckets);
+    induce_s_suffixes(text, &mut sa, &mut lms_buckets);
+
+    sa.into_boxed_slice()
 }
+
+
+// TODO need to  be specific here about post conditions
+fn sort_lms_substrs<A: Alphabet>(
+    text: &[A::Symbol],
+    sa: &mut [usize],
+    buckets: &mut Buckets<A>,
+) -> (Buckets<A>, Box<[usize]>) {
+    let mut lms_buckets = buckets.clone();
+
+    let lms_count = LMSIter::new(text)
+        .inspect(|&i| sa[lms_buckets.get_mut(text[i]).take_last()] = i)
+        .count();
+
+    // Induce partial order among LMS-substrings
+    induce_l_suffixes(text, sa, buckets);
+    induce_s_suffixes(text, sa, buckets);
+
+    // Collect LMS-prefixes, sorted by LMS-substrings
+    // NOTE disgregarding the last bucket here
+    let s_bucket_begin = buckets.end.as_ref();
+    let s_bucket_end = &lms_buckets.begin.as_ref()[1..];
+
+    let mut lms_sorted = Vec::with_capacity(lms_count);
+    lms_sorted.extend(
+        zip(s_bucket_begin, s_bucket_end)
+            .flat_map(|(&i, &j)| &sa[i..j])
+            .filter(|&&i| i > 0)
+            .filter(|&&i| text[i - 1] > text[i])
+            .copied(),
+    );
+
+    (lms_buckets, lms_sorted.into_boxed_slice())
+}
+
 
 fn induce_l_suffixes<A: Alphabet>(
     text: &[A::Symbol],
@@ -103,7 +125,6 @@ fn induce_l_suffixes<A: Alphabet>(
     assert_eq!(text.len(), sa.len());
 
     // Emulate S* suffix of guardian element
-    // TODO this doesn't belong here
     if let Some(last) = text.last() {
         sa[buckets.get_mut(*last).take_first()] = sa.len() - 1;
     }
@@ -144,7 +165,6 @@ fn induce_s_suffixes<A: Alphabet>(
 pub(super) mod alphabet {
     use std::fmt::Debug;
 
-    // TODO remove debug
     pub(super) trait Symbol: Sized + Copy + Ord + Debug {
         fn min_value() -> Self;
         fn to_index(self) -> usize;
@@ -163,7 +183,6 @@ pub(super) mod alphabet {
     }
 
     pub(super) trait Alphabet: Clone {
-        // TODO ??? + IndexMut<usize, Output = usize> ??
         type Buckets: Clone + AsRef<[usize]> + AsMut<[usize]>;
         type Symbol: Symbol;
 
@@ -212,8 +231,8 @@ mod buckets {
     #[derive(Debug, Clone)]
     pub(super) struct Buckets<A: Alphabet> {
         alphabet: A,
-        begin: A::Buckets,
-        end: A::Buckets,
+        pub begin: A::Buckets,
+        pub end: A::Buckets,
     }
 
 
@@ -240,10 +259,6 @@ mod buckets {
 
             Buckets { begin: bucket_begin, end: bucket_end, alphabet }
         }
-
-        pub fn begin(&self) -> &[usize] { self.begin.as_ref() }
-
-        pub fn end(&self) -> &[usize] { self.end.as_ref() }
 
         pub fn get(&self, symbol: A::Symbol) -> Bucket<&usize> {
             Bucket {
@@ -332,12 +347,10 @@ mod lms {
         for (i, &next) in suffix.iter().enumerate() {
             if increasing {
                 (prev, increasing, end) = (next, prev <= next, i);
-            } else {
-                if prev > next {
-                    (prev, end) = (next, i);
-                } else if prev < next {
-                    break;
-                }
+            } else if prev > next {
+                (prev, end) = (next, i);
+            } else if prev < next {
+                break;
             }
         }
         &suffix[..=end]

@@ -90,6 +90,7 @@ impl process::Termination for TestResults {
     }
 }
 
+// TODO free function instead of Trait? together with common_prefix?
 pub trait TextExt<T: Ord> {
     fn suffix(&self, i: usize) -> &Self;
 }
