@@ -1,6 +1,8 @@
 // TODO get rid of unstable features
 #![feature(array_windows)]
 
+// TODO use stricter clippy options
+
 mod lcp_array;
 mod suffix_array;
 

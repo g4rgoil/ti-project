@@ -1,5 +1,6 @@
 mod sais;
 
+use std::fmt::Debug;
 use std::{iter::zip, ops::Deref};
 
 use crate::TextExt;
@@ -32,14 +33,13 @@ impl SuffixArray {
     }
 
     #[allow(unused)]
-    pub fn is_correct<T: Ord>(&self, text: &[T]) -> bool {
+    pub fn verify<T: Ord + Debug>(&self, text: &[T]) {
         assert!(zip(self.0.iter(), self.0.iter().skip(1))
             .all(|(i, j)| text.suffix(*i) < text.suffix(*j)));
 
         let mut arr = vec![false; text.len()];
         self.0.iter().for_each(|i| arr[*i] = true);
         assert!(arr.into_iter().all(|b| b));
-        true
     }
 }
 
@@ -55,45 +55,18 @@ impl Deref for InverseSuffixArray {
 }
 
 #[allow(unused)]
-pub fn naive<T: Ord>(text: &[T]) -> SuffixArray {
+pub fn naive<T: Ord + Debug>(text: &[T]) -> SuffixArray {
     let mut sa: Box<_> = (0..text.len()).collect();
     sa.sort_by_key(|i| text.suffix(*i));
 
     // TODO remove
     let sa = SuffixArray(sa);
-    assert!(sa.is_correct(text));
+    sa.verify(text);
     sa
 }
 
 pub fn sais(text: &[u8]) -> SuffixArray {
     let sa = sais::sais(text);
-    assert!(sa.is_correct(text));
+    sa.verify(text);
     sa
-}
-
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn test_empty_text() {
-        assert_eq!(*naive(b""), []);
-    }
-
-    #[test]
-    fn test_simple_text() {
-        let text = b"banana";
-        let sa = [5, 3, 1, 0, 4, 2];
-
-        assert_eq!(*naive(text), sa);
-        assert_eq!(*sais(text), sa);
-    }
-
-    #[test]
-    fn test_isa_empty() {
-        let sa = SuffixArray(Box::new([]));
-
-        assert_eq!(*sa.inverse(), []);
-    }
 }
