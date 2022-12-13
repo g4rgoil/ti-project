@@ -3,6 +3,7 @@
 
 // TODO use stricter clippy options
 
+mod index;
 mod lcp_array;
 mod suffix_array;
 
