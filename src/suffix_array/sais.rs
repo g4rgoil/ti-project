@@ -3,7 +3,7 @@ use std::iter::zip;
 use self::alphabet::{Alphabet, ByteAlphabet, IntegerAlphabet};
 use self::buckets::Buckets;
 use self::lms::LMSIter;
-use super::SuffixArray;
+use super::{one, zero, ArrayIndex, SuffixArray, ToIndex};
 use crate::sa::sais::lms::lms_str_from_suffix;
 use crate::TextExt;
 
@@ -84,15 +84,18 @@ fn sais_impl<A: Alphabet>(text: &[A::Symbol], alphabet: A) -> Box<[usize]> {
 
 
 // TODO need to  be specific here about post conditions
-fn sort_lms_substrs<A: Alphabet>(
+fn sort_lms_substrs<A: Alphabet, Idx: ArrayIndex>(
     text: &[A::Symbol],
-    sa: &mut [usize],
-    buckets: &mut Buckets<A>,
-) -> (Buckets<A>, Box<[usize]>) {
+    sa: &mut [Idx],
+    buckets: &mut Buckets<A, Idx>,
+) -> (Buckets<A, Idx>, Box<[Idx]>) {
     let mut lms_buckets = buckets.clone();
 
     let lms_count = LMSIter::new(text)
-        .inspect(|&i| sa[lms_buckets.get_mut(text[i]).take_last()] = i)
+        .inspect(|&i| {
+            let idx = lms_buckets.get_mut(text[i]).take_last();
+            sa[idx.to_usize()] = i.to_index();
+        })
         .count();
 
     // Induce partial order among LMS-substrings
@@ -107,9 +110,9 @@ fn sort_lms_substrs<A: Alphabet>(
     let mut lms_sorted = Vec::with_capacity(lms_count);
     lms_sorted.extend(
         zip(s_bucket_begin, s_bucket_end)
-            .flat_map(|(&i, &j)| &sa[i..j])
-            .filter(|&&i| i > 0)
-            .filter(|&&i| text[i - 1] > text[i])
+            .flat_map(|(&i, &j)| &sa[i.to_usize()..j.to_usize()])
+            .filter(|&&i| i > zero())
+            .filter(|&&i| text[i.to_usize() - 1] > text[i.to_usize()])
             .copied(),
     );
 
@@ -117,40 +120,47 @@ fn sort_lms_substrs<A: Alphabet>(
 }
 
 
-fn induce_l_suffixes<A: Alphabet>(
+fn induce_l_suffixes<A: Alphabet, Idx: ArrayIndex>(
     text: &[A::Symbol],
-    sa: &mut [usize],
-    buckets: &mut Buckets<A>,
+    sa: &mut [Idx],
+    buckets: &mut Buckets<A, Idx>,
 ) {
     // Emulate S* suffix of guardian element
     if let Some(last) = text.last() {
-        sa[buckets.get_mut(*last).take_first()] = sa.len() - 1;
+        let idx = buckets.get_mut(*last).take_first();
+        sa[idx.to_usize()] = (sa.len() - 1).to_index();
     }
 
     for i in 0..sa.len() {
-        if sa[i] != 0 {
-            let ord = text[sa[i] - 1].cmp(&text[sa[i]]);
-            let bucket = buckets.get(text[sa[i]]);
+        if sa[i] != zero() {
+            let text_lhs = text[sa[i].to_usize() - 1];
+            let text_rhs = text[sa[i].to_usize()];
+            let bucket = buckets.get(text_rhs);
 
-            if ord.is_gt() || (ord.is_eq() && i < bucket.begin()) {
-                sa[buckets.get_mut(text[sa[i] - 1]).take_first()] = sa[i] - 1;
+            let ord = text_lhs.cmp(&text_rhs);
+            if ord.is_gt() || (ord.is_eq() && i < bucket.begin().to_usize()) {
+                let idx = buckets.get_mut(text_lhs).take_first();
+                sa[idx.to_usize()] = sa[i] - one();
             }
         }
     }
 }
 
-fn induce_s_suffixes<A: Alphabet>(
+fn induce_s_suffixes<A: Alphabet, Idx: ArrayIndex>(
     text: &[A::Symbol],
-    sa: &mut [usize],
-    buckets: &mut Buckets<A>,
+    sa: &mut [Idx],
+    buckets: &mut Buckets<A, Idx>,
 ) {
     for i in (0..sa.len()).rev() {
-        if sa[i] != 0 {
-            let ord = text[sa[i] - 1].cmp(&text[sa[i]]);
-            let bucket = buckets.get(text[sa[i]]);
+        if sa[i] != zero() {
+            let text_lhs = text[sa[i].to_usize() - 1];
+            let text_rhs = text[sa[i].to_usize()];
+            let bucket = buckets.get(text_rhs);
 
-            if ord.is_lt() || (ord.is_eq() && i >= bucket.begin()) {
-                sa[buckets.get_mut(text[sa[i] - 1]).take_last()] = sa[i] - 1;
+            let ord = text_lhs.cmp(&text_rhs);
+            if ord.is_lt() || (ord.is_eq() && i >= bucket.begin().to_usize()) {
+                let idx = buckets.get_mut(text_lhs).take_last();
+                sa[idx.to_usize()] = sa[i] - one();
             }
         }
     }
@@ -160,6 +170,8 @@ fn induce_s_suffixes<A: Alphabet>(
 // TODO maybe move this up to suffix_array
 pub(super) mod alphabet {
     use std::fmt::Debug;
+
+    use crate::sa::{zero, ArrayIndex};
 
     pub(super) trait Symbol: Sized + Copy + Ord + Debug {
         fn min_value() -> Self;
@@ -179,24 +191,26 @@ pub(super) mod alphabet {
     }
 
     pub(super) trait Alphabet: Clone {
-        type Buckets: Clone + AsRef<[usize]> + AsMut<[usize]>;
+        type Buckets<T: Clone>: Clone + AsRef<[T]> + AsMut<[T]>;
         type Symbol: Symbol;
 
         fn size(&self) -> usize;
 
-        fn buckets(&self) -> Self::Buckets;
+        fn buckets<T: ArrayIndex>(&self) -> Self::Buckets<T>;
     }
 
     #[derive(Debug, Clone, Copy)]
     pub(super) struct ByteAlphabet;
 
     impl Alphabet for ByteAlphabet {
-        type Buckets = [usize; u8::MAX as usize + 1];
+        type Buckets<T: Clone> = [T; u8::MAX as usize + 1];
         type Symbol = u8;
 
         fn size(&self) -> usize { u8::MAX as usize + 1 }
 
-        fn buckets(&self) -> Self::Buckets { [0; u8::MAX as usize + 1] }
+        fn buckets<Idx: ArrayIndex>(&self) -> Self::Buckets<Idx> {
+            [zero(); u8::MAX as usize + 1]
+        }
     }
 
     #[derive(Debug, Clone, Copy)]
@@ -209,12 +223,14 @@ pub(super) mod alphabet {
     }
 
     impl Alphabet for IntegerAlphabet {
-        type Buckets = Vec<usize>;
+        type Buckets<T: Clone> = Box<[T]>;
         type Symbol = usize;
 
         fn size(&self) -> usize { self.size }
 
-        fn buckets(&self) -> Self::Buckets { vec![0; self.size] }
+        fn buckets<Idx: ArrayIndex>(&self) -> Self::Buckets<Idx> {
+            vec![zero(); self.size].into_boxed_slice()
+        }
     }
 }
 
@@ -223,31 +239,32 @@ mod buckets {
     use std::{iter::zip, mem, ops::Deref};
 
     use super::alphabet::{Alphabet, Symbol};
+    use crate::sa::{one, zero, ArrayIndex};
 
     #[derive(Debug, Clone)]
-    pub(super) struct Buckets<A: Alphabet> {
+    pub(super) struct Buckets<A: Alphabet, Idx: ArrayIndex> {
         alphabet: A,
-        pub begin: A::Buckets,
-        pub end: A::Buckets,
+        pub begin: A::Buckets<Idx>,
+        pub end: A::Buckets<Idx>,
     }
 
 
-    impl<A: Alphabet> Buckets<A> {
+    impl<A: Alphabet, Idx: ArrayIndex> Buckets<A, Idx> {
         pub fn new(text: &[A::Symbol], alphabet: A) -> Self {
-            let mut histogram = alphabet.buckets();
+            let mut histogram = alphabet.buckets::<Idx>();
             for c in text {
-                histogram.as_mut()[c.to_index()] += 1;
+                histogram.as_mut()[c.to_index()] += one();
             }
 
-            let mut bucket_begin = alphabet.buckets();
-            let sum = &mut 0;
+            let mut bucket_begin = alphabet.buckets::<Idx>();
+            let sum = &mut zero();
             for (begin, n) in zip(bucket_begin.as_mut(), histogram.as_ref()) {
-                *begin = mem::replace(sum, *sum + n);
+                *begin = mem::replace(sum, *sum + *n);
             }
 
             // Reuse histogram for bucket ends
             let mut bucket_end = histogram;
-            let mut sum = 0;
+            let mut sum = zero();
             for end in bucket_end.as_mut() {
                 sum += *end;
                 *end = sum;
@@ -256,14 +273,14 @@ mod buckets {
             Buckets { begin: bucket_begin, end: bucket_end, alphabet }
         }
 
-        pub fn get(&self, symbol: A::Symbol) -> Bucket<&usize> {
+        pub fn get(&self, symbol: A::Symbol) -> Bucket<&Idx> {
             Bucket {
                 begin: &self.begin.as_ref()[symbol.to_index()],
                 end: &self.end.as_ref()[symbol.to_index()],
             }
         }
 
-        pub fn get_mut(&mut self, symbol: A::Symbol) -> Bucket<&mut usize> {
+        pub fn get_mut(&mut self, symbol: A::Symbol) -> Bucket<&mut Idx> {
             Bucket {
                 begin: &mut self.begin.as_mut()[symbol.to_index()],
                 end: &mut self.end.as_mut()[symbol.to_index()],
@@ -277,19 +294,19 @@ mod buckets {
         end: T,
     }
 
-    impl<T: Deref<Target = usize>> Bucket<T> {
-        pub fn begin(&self) -> usize { *self.begin }
+    impl<Idx: ArrayIndex, T: Deref<Target = Idx>> Bucket<T> {
+        pub fn begin(&self) -> Idx { *self.begin }
 
-        pub fn end(&self) -> usize { *self.end }
+        pub fn end(&self) -> Idx { *self.end }
     }
 
-    impl Bucket<&mut usize> {
-        pub fn take_first(&mut self) -> usize {
-            mem::replace(self.begin, *self.begin + 1)
+    impl<Idx: ArrayIndex> Bucket<&mut Idx> {
+        pub fn take_first(&mut self) -> Idx {
+            mem::replace(self.begin, *self.begin + one())
         }
 
-        pub fn take_last(&mut self) -> usize {
-            *self.end -= 1;
+        pub fn take_last(&mut self) -> Idx {
+            *self.end -= one();
             *self.end
         }
     }
@@ -339,6 +356,7 @@ mod lms {
     }
 
     pub(super) fn lms_str_from_suffix<S: Symbol>(suffix: &[S]) -> &[S] {
+        // TODO is this the most efficient way possible?
         let (mut prev, mut increasing, mut end) = (S::min_value(), true, 0);
         for (i, &next) in suffix.iter().enumerate() {
             if increasing {
