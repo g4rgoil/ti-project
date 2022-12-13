@@ -1,25 +1,30 @@
 use std::iter::zip;
 
-use self::alphabet::{Alphabet, ByteAlphabet, IntegerAlphabet};
+use self::alphabet::{Alphabet, ByteAlphabet, IndexAlphabet, IndexSymbol};
 use self::buckets::Buckets;
 use self::lms::LMSIter;
 use super::{one, zero, ArrayIndex, SuffixArray, ToIndex};
+use crate::sa::fits_index;
 use crate::sa::sais::lms::lms_str_from_suffix;
 use crate::TextExt;
 
 pub(super) fn sais(text: &[u8]) -> SuffixArray {
-    SuffixArray(sais_impl(text, ByteAlphabet))
+    SuffixArray(sais_impl::<_, usize>(text, ByteAlphabet))
 }
 
 
-// TODO return Box<[]> instead here?
-fn sais_impl<A: Alphabet>(text: &[A::Symbol], alphabet: A) -> Box<[usize]> {
+fn sais_impl<A: Alphabet, Idx: ArrayIndex>(
+    text: &[A::Symbol],
+    alphabet: A,
+) -> Box<[Idx]> {
+    assert!(fits_index::<Idx, _>(text));
+
     // TODO fix this
     if text.is_empty() {
         return Box::new([]);
     }
 
-    let mut sa = vec![0; text.len()];
+    let mut sa = vec![zero::<Idx>(); text.len()];
     let mut buckets = Buckets::new(text, alphabet);
 
     // TODO the handling of buckets is weird here
@@ -29,22 +34,22 @@ fn sais_impl<A: Alphabet>(text: &[A::Symbol], alphabet: A) -> Box<[usize]> {
     // Write rank of LMS-substring into the suffix array
     let mut iter = lms_sorted
         .iter()
-        .map(|i| (i, lms_str_from_suffix(text.suffix(*i))))
+        .map(|i| (i, lms_str_from_suffix(text.suffix(i.to_usize()))))
         .peekable();
 
-    let mut rank = 0;
+    let mut rank = zero();
     while let (Some((i, prev)), next) = (iter.next(), iter.peek()) {
-        sa[*i] = rank;
+        sa[i.to_usize()] = rank;
         if next.map_or(true, |(_, next)| &prev != next) {
-            rank += 1;
+            rank += one();
         }
     }
 
     // TODO case distinction alphabet_size ?= text_size
     // TODO use u8, u16, u32, u64 depending on lms_count
     // TODO Move this to the alphabet trait
-    let mut lms_text = vec![0; lms_sorted.len()];
-    let lms_alphabet = IntegerAlphabet::new(lms_sorted.len());
+    let mut lms_text = vec![IndexSymbol(zero()); lms_sorted.len()];
+    let lms_alphabet = IndexAlphabet::<Idx>::new(lms_sorted.len());
     let mut lms_suffixes = lms_sorted;
 
     // TODO benchmark what is better here (don't forget sa.fill(MAX))
@@ -53,12 +58,12 @@ fn sais_impl<A: Alphabet>(text: &[A::Symbol], alphabet: A) -> Box<[usize]> {
         .zip(lms_suffixes.iter_mut().rev())
         .zip(LMSIter::new(text))
     {
-        *dst_symbol = sa[i];
-        *dst_index = i;
+        *dst_symbol = IndexSymbol(sa[i]);
+        *dst_index = i.to_index();
     }
 
-    sa.fill(0);
-    let lms_sa = sais_impl(&lms_text, lms_alphabet);
+    sa.fill(zero());
+    let lms_sa = sais_impl::<_, Idx>(&lms_text, lms_alphabet);
 
     // Put the sorted LMS-suffixes at the end of the buckets
     let mut lms_iter = lms_sa.iter();
@@ -66,15 +71,17 @@ fn sais_impl<A: Alphabet>(text: &[A::Symbol], alphabet: A) -> Box<[usize]> {
     let lms_bucket_end = &lms_buckets.begin.as_ref()[1..];
 
     for (&i, &j) in zip(lms_bucket_begin, lms_bucket_end) {
-        for (dst, n) in zip(&mut sa[i..j], lms_iter.by_ref()) {
-            *dst = lms_suffixes[*n];
+        for (dst, n) in
+            zip(&mut sa[i.to_usize()..j.to_usize()], lms_iter.by_ref())
+        {
+            *dst = lms_suffixes[n.to_usize()];
         }
     }
 
     // Reset LMS buckets to initial state
     let (last, head) = lms_buckets.end.as_mut().split_last_mut().unwrap();
     head.clone_from_slice(&lms_buckets.begin.as_ref()[1..]);
-    *last = text.len();
+    *last = text.len().to_index();
 
     induce_l_suffixes(text, &mut sa, &mut lms_buckets);
     induce_s_suffixes(text, &mut sa, &mut lms_buckets);
@@ -169,7 +176,7 @@ fn induce_s_suffixes<A: Alphabet, Idx: ArrayIndex>(
 
 // TODO maybe move this up to suffix_array
 pub(super) mod alphabet {
-    use std::fmt::Debug;
+    use std::{fmt::Debug, marker::PhantomData};
 
     use crate::sa::{zero, ArrayIndex};
 
@@ -178,8 +185,28 @@ pub(super) mod alphabet {
         fn to_index(self) -> usize;
     }
 
+    // TODO what about i8, i16, ...
+
     impl Symbol for u8 {
         fn to_index(self) -> usize { self.into() }
+
+        fn min_value() -> Self { 0 }
+    }
+
+    impl Symbol for u16 {
+        fn to_index(self) -> usize { self.into() }
+
+        fn min_value() -> Self { 0 }
+    }
+
+    impl Symbol for u32 {
+        fn to_index(self) -> usize { self as usize }
+
+        fn min_value() -> Self { 0 }
+    }
+
+    impl Symbol for u64 {
+        fn to_index(self) -> usize { self as usize }
 
         fn min_value() -> Self { 0 }
     }
@@ -188,6 +215,16 @@ pub(super) mod alphabet {
         fn to_index(self) -> usize { self }
 
         fn min_value() -> Self { 0 }
+    }
+
+    #[repr(transparent)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    pub(super) struct IndexSymbol<Idx: ArrayIndex>(pub Idx);
+
+    impl<Idx: ArrayIndex> Symbol for IndexSymbol<Idx> {
+        fn min_value() -> Self { Self(ArrayIndex::ZERO) }
+
+        fn to_index(self) -> usize { Idx::to_usize(self.0) }
     }
 
     pub(super) trait Alphabet: Clone {
@@ -214,21 +251,24 @@ pub(super) mod alphabet {
     }
 
     #[derive(Debug, Clone, Copy)]
-    pub(super) struct IntegerAlphabet {
+    pub(super) struct IndexAlphabet<Idx> {
         size: usize,
+        _phantom: PhantomData<Idx>,
     }
 
-    impl IntegerAlphabet {
-        pub(super) fn new(size: usize) -> Self { Self { size } }
+    impl<Idx: ArrayIndex> IndexAlphabet<Idx> {
+        pub(super) fn new(size: usize) -> Self {
+            Self { size, _phantom: Default::default() }
+        }
     }
 
-    impl Alphabet for IntegerAlphabet {
+    impl<Idx: ArrayIndex> Alphabet for IndexAlphabet<Idx> {
         type Buckets<T: Clone> = Box<[T]>;
-        type Symbol = usize;
+        type Symbol = IndexSymbol<Idx>;
 
         fn size(&self) -> usize { self.size }
 
-        fn buckets<Idx: ArrayIndex>(&self) -> Self::Buckets<Idx> {
+        fn buckets<Idx2: ArrayIndex>(&self) -> Self::Buckets<Idx2> {
             vec![zero(); self.size].into_boxed_slice()
         }
     }
@@ -377,7 +417,34 @@ mod test {
     use super::{alphabet::ByteAlphabet, *};
     use crate::suffix_array as sa;
 
+    const LOREM_IPSUM_LONG: &[u8] = b"Lorem ipsum dolor sit amet, officia \
+        excepteur ex fugiat reprehenderit enim labore culpa sint ad nisi Lorem \
+        pariatur mollit ex esse exercitation amet. Nisi anim cupidatat \
+        excepteur officia. Reprehenderit nostrud nostrud ipsum Lorem est \
+        aliquip amet voluptate voluptate dolor minim nulla est proident. \
+        Nostrud officia pariatur ut officia. Sit irure elit esse ea nulla sunt \
+        ex occaecat reprehenderit commodo officia dolor Lorem duis laboris \
+        cupidatat officia voluptate. Culpa proident adipisicing id nulla nisi \
+        laboris ex in Lorem sunt duis officia eiusmod. Aliqua reprehenderit \
+        commodo ex non excepteur duis sunt velit enim. Voluptate laboris sint \
+        cupidatat ullamco ut ea consectetur et est culpa et culpa duis.";
+
     const A: ByteAlphabet = ByteAlphabet;
+
+    fn convert<I: ArrayIndex, J: ArrayIndex>(arr: &[I]) -> Box<[J]> {
+        arr.iter().map(|i| i.to_usize().to_index()).collect()
+    }
+
+    macro_rules! assert_sais_eq {
+        (($text:expr, $alphabet:expr), $sa:expr, $($type:ty),+ $(,)?) => {
+            $(
+                assert_eq!(
+                    *$crate::suffix_array::sais::sais_impl::<_, $type>($text, $alphabet),
+                    *$crate::suffix_array::sais::test::convert($sa)
+                );
+            )+
+        };
+    }
 
     #[test]
     #[ignore]
@@ -435,49 +502,56 @@ mod test {
     fn test_sais_wikipedia_with_sentinel() {
         let text = b"immissiissippi\0";
         let sa = [14, 13, 6, 0, 10, 3, 7, 2, 1, 12, 11, 5, 9, 4, 8];
-        assert_eq!(*sais_impl(text, A), sa);
+        assert_eq!(*sais_impl::<_, usize>(text, A), sa);
+        assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
     }
 
     #[test]
     fn test_sais_wikipedia_no_sentinel() {
         let text = b"immissiissippi";
         let sa = [13, 6, 0, 10, 3, 7, 2, 1, 12, 11, 5, 9, 4, 8];
-        assert_eq!(*sais_impl(text, A), sa);
+        assert_eq!(*sais_impl::<_, usize>(text, A), sa);
+        assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
     }
 
     #[test]
     fn test_sais_slides_with_sentinel() {
         let text = b"ababcabcabba\0";
         let sa = [12, 11, 0, 8, 5, 2, 10, 1, 9, 6, 3, 7, 4];
-        assert_eq!(*sais_impl(text, A), sa);
+        assert_eq!(*sais_impl::<_, usize>(text, A), sa);
+        assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
     }
 
     #[test]
     fn test_sais_slides_no_sentinel() {
         let text = b"ababcabcabba";
         let sa = [11, 0, 8, 5, 2, 10, 1, 9, 6, 3, 7, 4];
-        assert_eq!(*sais_impl(text, A), sa);
+        assert_eq!(*sais_impl::<_, usize>(text, A), sa);
+        assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
     }
 
     #[test]
     fn test_sais_all_a_with_sentinel() {
         let text = b"aaaaaaaa\0";
         let sa = [8, 7, 6, 5, 4, 3, 2, 1, 0];
-        assert_eq!(*sais_impl(text, A), sa);
+        assert_eq!(*sais_impl::<_, usize>(text, A), sa);
+        assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
     }
 
     #[test]
     fn test_sais_all_a_no_sentinel() {
         let text = b"aaaaaaaa";
         let sa = [7, 6, 5, 4, 3, 2, 1, 0];
-        assert_eq!(*sais_impl(text, A), sa);
+        assert_eq!(*sais_impl::<_, usize>(text, A), sa);
+        assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
     }
 
     #[test]
     fn test_sais_null_character() {
         let text = b"aba\0cabcabba";
         let sa = [3, 11, 2, 0, 8, 5, 10, 1, 9, 6, 7, 4];
-        assert_eq!(*sais_impl(text, A), sa);
+        assert_eq!(*sais_impl::<_, usize>(text, A), sa);
+        assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
     }
 
     #[test]
@@ -485,39 +559,40 @@ mod test {
         let text = b"Lorem ipsum dolor sit amet, qui minim labore adipisicing \
                    minim sint cillum sint consectetur cupidatat.";
         let sa = &*sa::naive(text).0;
-        assert_eq!(*sais_impl(text, A), *sa);
+        assert_eq!(*sais_impl::<_, usize>(text, A), *sa);
+        assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
     }
 
     #[test]
     fn test_sais_lorem_ipsum_long() {
-        let text = b"Lorem ipsum dolor sit amet, officia excepteur ex fugiat \
-                   reprehenderit enim labore culpa sint ad nisi Lorem pariatur \
-                   mollit ex esse exercitation amet. Nisi anim cupidatat \
-                   excepteur officia. Reprehenderit nostrud nostrud ipsum Lorem \
-                   est aliquip amet voluptate voluptate dolor minim nulla est \
-                   proident. Nostrud officia pariatur ut officia. Sit irure \
-                   elit esse ea nulla sunt ex occaecat reprehenderit commodo \
-                   officia dolor Lorem duis laboris cupidatat officia voluptate. \
-                   Culpa proident adipisicing id nulla nisi laboris ex in Lorem \
-                   sunt duis officia eiusmod. Aliqua reprehenderit commodo ex \
-                   non excepteur duis sunt velit enim. Voluptate laboris sint \
-                   cupidatat ullamco ut ea consectetur et est culpa et culpa duis.";
+        let text = LOREM_IPSUM_LONG;
         let sa = &*sa::naive(text).0;
-        assert_eq!(*sais_impl(text, A), *sa);
+        assert_eq!(*sais_impl::<_, usize>(text, A), *sa);
+        assert_sais_eq!((text, A), &sa, u16, u32, u64,);
     }
+
+    #[test]
+    #[should_panic]
+    fn test_sais_lorem_ipsum_long_panick() {
+        let text = LOREM_IPSUM_LONG;
+        let sa = &*sa::naive::<_, usize>(text).0;
+        assert_eq!(*sais_impl::<_, u8>(text, A), *convert(sa));
+    }
+
 
     #[test]
     fn test_sais_dna() {
         let text = b"CAACAACAAAT";
         let sa = &*sa::naive(text).0;
-        assert_eq!(*sais_impl(text, A), *sa);
+        assert_eq!(*sais_impl::<_, usize>(text, A), *sa);
+        assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
     }
 
     #[test]
-    #[ignore]
     fn test_sais_dna_2() {
         let text = b"TGTGGGACTGTGGAG";
         let sa = &*sa::naive(text).0;
-        assert_eq!(*sais_impl(text, A), *sa);
+        assert_eq!(*sais_impl::<_, usize>(text, A), *sa);
+        assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
     }
 }

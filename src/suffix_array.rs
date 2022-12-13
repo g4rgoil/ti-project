@@ -92,6 +92,7 @@ impl<Idx: ArrayIndex> ToIndex<Idx> for usize {
 }
 
 // TODO move this somewhere it makes more sense
+// TODO where std::ops::Range: DoubleEndedIterator to emulate Step?!
 #[rustfmt::skip]
 pub trait ArrayIndex: 'static + Sized + Copy + Ord + Debug
     + Add<Output = Self> + AddAssign + Sub<Output = Self> + SubAssign
