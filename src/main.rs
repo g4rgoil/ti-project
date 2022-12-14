@@ -21,15 +21,15 @@ fn main() -> Result<TestResults, String> {
     // TODO use u32 instead of usize if possible
 
     fn run_timed<T>(f: impl FnOnce() -> T) -> (T, Duration) {
+        // TODO is this atually correct?
         let before = Instant::now();
         let result = f();
         let elapsed = before.elapsed();
         (result, elapsed)
     }
 
-    let input_path = env::args()
-        .nth(1)
-        .ok_or_else(|| "expected exactly 1 argument".to_owned())?;
+    let input_path =
+        env::args().nth(1).ok_or_else(|| "expected exactly 1 argument".to_owned())?;
     let input_file = fs::read(input_path).map_err(|e| e.to_string())?;
 
     println!("SA (SAIS)");
@@ -37,8 +37,7 @@ fn main() -> Result<TestResults, String> {
     // TODO sa memory
 
     println!("LCP (naive)");
-    let (lcp_naive, lcp_naive_time) =
-        run_timed(|| lcp::naive(&input_file, &sa));
+    let (lcp_naive, lcp_naive_time) = run_timed(|| lcp::naive(&input_file, &sa));
     println!("LCP (kasai)");
     let (lcp_kasai, lcp_kasai_time) = run_timed(|| {
         let isa = sa.inverse();

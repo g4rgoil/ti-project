@@ -68,8 +68,8 @@ pub fn naive<T: Ord + Debug, Idx: ArrayIndex>(text: &[T]) -> SuffixArray<Idx> {
     SuffixArray(sa)
 }
 
-pub fn sais(text: &[u8]) -> SuffixArray {
+pub fn sais<Idx: ArrayIndex>(text: &[u8]) -> SuffixArray<Idx> {
     let sa = sais::sais(text);
-    sa.verify(text);
+    // sa.verify(text);
     sa
 }

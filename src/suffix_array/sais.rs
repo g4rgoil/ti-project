@@ -1,16 +1,17 @@
 use std::iter::zip;
 
 use self::alphabet::{Alphabet, ByteAlphabet, IndexAlphabet, IndexSymbol};
-use self::buckets::Buckets;
+use self::buckets::{s_buckets, Buckets, LMSBuckets};
 use self::lms::LMSIter;
 use super::SuffixArray;
 use crate::index::{ArrayIndex, ToIndex};
 use crate::sa::index;
+use crate::sa::sais::buckets::init_buckets;
 use crate::sa::sais::lms::lms_str_from_suffix;
 use crate::TextExt;
 
-pub(super) fn sais(text: &[u8]) -> SuffixArray {
-    SuffixArray(sais_impl::<_, usize>(text, ByteAlphabet))
+pub(super) fn sais<Idx: ArrayIndex>(text: &[u8]) -> SuffixArray<Idx> {
+    SuffixArray(sais_impl(text, ByteAlphabet))
 }
 
 
@@ -20,17 +21,14 @@ fn sais_impl<A: Alphabet, Idx: ArrayIndex>(
 ) -> Box<[Idx]> {
     assert!(index::fits::<Idx, _>(text));
 
-    // TODO fix this
     if text.is_empty() {
         return Box::new([]);
     }
 
     let mut sa = vec![Idx::ZERO; text.len()];
-    let mut buckets = Buckets::new(text, alphabet);
+    let (mut buckets, mut lms_buckets) = init_buckets(text, &mut sa, alphabet);
 
-    // TODO the handling of buckets is weird here
-    let (mut lms_buckets, mut lms_sorted) =
-        partial_sort_lms_strs(text, &mut sa, &mut buckets);
+    let mut lms_sorted = partial_sort_lms(text, &mut sa, &mut buckets, &mut lms_buckets);
 
     // Write rank of LMS-substring into the suffix array
     let mut iter = lms_sorted
@@ -47,12 +45,9 @@ fn sais_impl<A: Alphabet, Idx: ArrayIndex>(
     }
 
     if rank.to_usize() == lms_sorted.len() {
-        let mut lms_iter = lms_sorted.iter();
-        let lms_bucket_begin = lms_buckets.end.as_ref();
-        let lms_bucket_end = &lms_buckets.begin.as_ref()[1..];
-
         sa.fill(Idx::ZERO);
-        for (&i, &j) in zip(lms_bucket_begin, lms_bucket_end) {
+        let mut lms_iter = lms_sorted.iter();
+        for (&i, &j) in lms_buckets.lms_buckets() {
             zip(&mut sa[i.to_usize()..j.to_usize()], lms_iter.by_ref())
                 .for_each(|(dst, lms)| *dst = *lms);
         }
@@ -60,58 +55,44 @@ fn sais_impl<A: Alphabet, Idx: ArrayIndex>(
         sort_lms_recursive(text, &mut sa, &mut lms_buckets, &mut lms_sorted);
     }
 
-    // Reset LMS buckets to initial state
-    let (last, head) = lms_buckets.end.as_mut().split_last_mut().unwrap();
-    head.clone_from_slice(&lms_buckets.begin.as_ref()[1..]);
-    *last = text.len().to_index();
-
-    induce_l_suffixes(text, &mut sa, &mut lms_buckets);
-    induce_s_suffixes(text, &mut sa, &mut lms_buckets);
+    let mut buckets = lms_buckets.reset(text);
+    induce_l_suffixes(text, &mut sa, &mut buckets);
+    induce_s_suffixes(text, &mut sa, &mut buckets);
 
     sa.into_boxed_slice()
 }
 
 
+#[inline(always)]
 // TODO need to  be specific here about post conditions
-fn partial_sort_lms_strs<A: Alphabet, Idx: ArrayIndex>(
+fn partial_sort_lms<A: Alphabet, Idx: ArrayIndex>(
     text: &[A::Symbol],
     sa: &mut [Idx],
     buckets: &mut Buckets<A, Idx>,
-) -> (Buckets<A, Idx>, Box<[Idx]>) {
-    let mut lms_buckets = buckets.clone();
-
-    let lms_count = LMSIter::new(text)
-        .inspect(|&lms| {
-            let idx = lms_buckets.get_mut(text[lms]).take_last();
-            sa[idx.to_usize()] = lms.to_index();
-        })
-        .count();
-
+    lms_buckets: &LMSBuckets<A, Idx>,
+) -> Box<[Idx]> {
     // Induce partial order among LMS-substrings
     induce_l_suffixes(text, sa, buckets);
     induce_s_suffixes(text, sa, buckets);
 
     // Collect LMS-prefixes, sorted by LMS-substrings
-    // NOTE disgregarding the last bucket here
-    let s_bucket_begin = buckets.end.as_ref();
-    let s_bucket_end = &lms_buckets.begin.as_ref()[1..];
-
-    let mut lms_sorted = Vec::with_capacity(lms_count);
+    let mut lms_sorted = Vec::with_capacity(lms_buckets.count());
     lms_sorted.extend(
-        zip(s_bucket_begin, s_bucket_end)
+        s_buckets(buckets, lms_buckets)
             .flat_map(|(&i, &j)| &sa[i.to_usize()..j.to_usize()])
             .filter(|&&i| i > Idx::ZERO)
             .filter(|&&i| text[i.to_usize() - 1] > text[i.to_usize()])
             .copied(),
     );
 
-    (lms_buckets, lms_sorted.into_boxed_slice())
+    lms_sorted.into_boxed_slice()
 }
 
+#[inline(always)]
 fn sort_lms_recursive<A: Alphabet, Idx: ArrayIndex>(
     text: &[A::Symbol],
     sa: &mut [Idx],
-    lms_buckets: &mut Buckets<A, Idx>,
+    lms_buckets: &mut LMSBuckets<A, Idx>,
     lms_sorted: &mut [Idx],
 ) {
     // TODO case distinction alphabet_size ?= text_size
@@ -134,16 +115,15 @@ fn sort_lms_recursive<A: Alphabet, Idx: ArrayIndex>(
 
     // Put the sorted LMS-suffixes at the end of the buckets
     let mut lms_iter = lms_sa.iter();
-    let lms_bucket_begin = lms_buckets.end.as_ref();
-    let lms_bucket_end = &lms_buckets.begin.as_ref()[1..];
 
-    for (&i, &j) in zip(lms_bucket_begin, lms_bucket_end) {
+    for (&i, &j) in lms_buckets.lms_buckets() {
         zip(&mut sa[i.to_usize()..j.to_usize()], lms_iter.by_ref())
             .for_each(|(dst, lms)| *dst = lms_sorted[lms.to_usize()]);
     }
 }
 
 
+#[inline(always)]
 fn induce_l_suffixes<A: Alphabet, Idx: ArrayIndex>(
     text: &[A::Symbol],
     sa: &mut [Idx],
@@ -170,6 +150,7 @@ fn induce_l_suffixes<A: Alphabet, Idx: ArrayIndex>(
     }
 }
 
+#[inline(always)]
 fn induce_s_suffixes<A: Alphabet, Idx: ArrayIndex>(
     text: &[A::Symbol],
     sa: &mut [Idx],
@@ -293,12 +274,72 @@ pub(super) mod alphabet {
 
 #[allow(dead_code)]
 mod buckets {
-    use std::{iter::zip, mem, ops::Deref};
+    use std::slice;
+    use std::{
+        iter::{zip, Zip},
+        mem,
+        ops::Deref,
+    };
 
     use super::alphabet::{Alphabet, Symbol};
+    use super::lms::LMSIter;
     use crate::index::ArrayIndex;
 
-    // TODO add separate type for LMSBuckets
+    pub(super) type Iter<'a, 'b, T> = Zip<slice::Iter<'a, T>, slice::Iter<'b, T>>;
+
+    #[inline(always)]
+    pub(super) fn init_buckets<A: Alphabet, Idx: ArrayIndex>(
+        text: &[A::Symbol],
+        sa: &mut [Idx],
+        alphabet: A,
+    ) -> (Buckets<A, Idx>, LMSBuckets<A, Idx>) {
+        let buckets = Buckets::new(text, alphabet);
+        let mut lms_buckets = buckets.clone();
+
+        let lms_count = LMSIter::new(text)
+            .inspect(|&lms| {
+                let idx: Idx = lms_buckets.get_mut(text[lms]).take_last();
+                sa[idx.to_usize()] = Idx::from_usize(lms);
+            })
+            .count();
+
+        (buckets, LMSBuckets { buckets: lms_buckets, count: lms_count })
+    }
+
+    #[inline(always)]
+    pub(super) fn s_buckets<'a, 'b, A: Alphabet, Idx: ArrayIndex>(
+        buckets: &'a Buckets<A, Idx>,
+        lms_buckets: &'b LMSBuckets<A, Idx>,
+    ) -> Iter<'a, 'b, Idx> {
+        zip(buckets.end.as_ref(), &lms_buckets.buckets.begin.as_ref()[1..])
+    }
+
+
+    pub(super) struct LMSBuckets<A: Alphabet, Idx: ArrayIndex> {
+        buckets: Buckets<A, Idx>,
+        count: usize,
+    }
+
+    impl<A: Alphabet, Idx: ArrayIndex> LMSBuckets<A, Idx> {
+        pub(super) fn count(&self) -> usize { self.count }
+
+        #[inline(always)]
+        pub(super) fn lms_buckets(&self) -> Iter<Idx> {
+            // NOTE disgregarding the last bucket here
+            zip(self.buckets.end.as_ref(), &self.buckets.begin.as_ref()[1..])
+        }
+
+        #[inline(always)]
+        pub(super) fn reset(mut self, text: &[A::Symbol]) -> Buckets<A, Idx> {
+            let (last, head) = self.buckets.end.as_mut().split_last_mut().unwrap();
+            head.clone_from_slice(&self.buckets.begin.as_ref()[1..]);
+            *last = Idx::from_usize(text.len());
+
+            self.buckets
+        }
+    }
+
+
     #[derive(Debug, Clone)]
     pub(super) struct Buckets<A: Alphabet, Idx: ArrayIndex> {
         alphabet: A,
@@ -307,7 +348,7 @@ mod buckets {
     }
 
     impl<A: Alphabet, Idx: ArrayIndex> Buckets<A, Idx> {
-        pub fn new(text: &[A::Symbol], alphabet: A) -> Self {
+        fn new(text: &[A::Symbol], alphabet: A) -> Self {
             let mut histogram = alphabet.buckets::<Idx>();
             for c in text {
                 histogram.as_mut()[c.to_index()] += Idx::ONE;
@@ -383,10 +424,7 @@ mod lms {
 
     impl<'a, S> LMSIter<'a, S> {
         pub(super) fn new(text: &'a [S]) -> Self {
-            LMSIter {
-                text: text.iter().enumerate().rev().peekable(),
-                decreasing: false,
-            }
+            LMSIter { text: text.iter().enumerate().rev().peekable(), decreasing: false }
         }
     }
 
