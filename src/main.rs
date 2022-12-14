@@ -13,6 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use index::ArrayIndex;
 use lcp_array as lcp;
 use suffix_array as sa;
 
@@ -93,8 +94,12 @@ impl process::Termination for TestResults {
 // TODO free function instead of Trait? together with common_prefix?
 pub trait TextExt<T: Ord> {
     fn suffix(&self, i: usize) -> &Self;
+
+    fn fits<Idx: ArrayIndex>(&self) -> bool;
 }
 
 impl<T: Ord> TextExt<T> for [T] {
     fn suffix(&self, i: usize) -> &Self { &self[i..] }
+
+    fn fits<Idx: ArrayIndex>(&self) -> bool { self.len() <= Idx::MAX.as_() }
 }

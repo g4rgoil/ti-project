@@ -3,7 +3,7 @@ mod sais;
 use std::fmt::Debug;
 use std::{iter::zip, ops::Deref};
 
-use crate::index::{self, fits, ArrayIndex};
+use crate::index::ArrayIndex;
 use crate::TextExt;
 
 /// TODO: Invariants:
@@ -27,7 +27,7 @@ impl<Idx: ArrayIndex> SuffixArray<Idx> {
         for (i, sa_i) in self.iter().enumerate() {
             // SAFETY: Because a SuffixArray is a permutation of (0, len),
             // sa_i is guaranteed to not be out of bounds for isa
-            unsafe { *isa.get_unchecked_mut(sa_i.to_usize()) = i };
+            unsafe { *isa.get_unchecked_mut(sa_i.as_()) = i };
         }
 
         InverseSuffixArray(isa.into_boxed_slice())
@@ -36,12 +36,11 @@ impl<Idx: ArrayIndex> SuffixArray<Idx> {
     // TODO move to test module
     #[allow(unused)]
     pub fn verify<T: Ord + Debug>(&self, text: &[T]) {
-        assert!(zip(self.0.iter(), self.0.iter().skip(1)).all(|(i, j)| {
-            text.suffix(i.to_usize()) < text.suffix(j.to_usize())
-        }));
+        assert!(zip(self.0.iter(), self.0.iter().skip(1))
+            .all(|(i, j)| { text.suffix(i.as_()) < text.suffix(j.as_()) }));
 
         let mut arr = vec![false; text.len()];
-        self.0.iter().for_each(|i| arr[i.to_usize()] = true);
+        self.0.iter().for_each(|i| arr[i.as_()] = true);
         assert_eq!(arr, vec![true; text.len()]);
     }
 }
@@ -60,10 +59,10 @@ impl<Idx: ArrayIndex> Deref for InverseSuffixArray<Idx> {
 #[allow(unused)]
 pub fn naive<T: Ord + Debug, Idx: ArrayIndex>(text: &[T]) -> SuffixArray<Idx> {
     // TODO This should return a result instead
-    assert!(index::fits::<Idx, _>(text));
+    assert!(text.fits::<Idx>());
 
     let mut sa: Box<_> = (0..text.len()).map(Idx::from_usize).collect();
-    sa.sort_by_key(|i| text.suffix(i.to_usize()));
+    sa.sort_by_key(|i| text.suffix(i.as_()));
 
     SuffixArray(sa)
 }

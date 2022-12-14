@@ -5,7 +5,6 @@ use self::buckets::{s_buckets, Buckets, LMSBuckets};
 use self::lms::LMSIter;
 use super::SuffixArray;
 use crate::index::{ArrayIndex, ToIndex};
-use crate::sa::index;
 use crate::sa::sais::buckets::init_buckets;
 use crate::sa::sais::lms::lms_str_from_suffix;
 use crate::TextExt;
@@ -19,7 +18,7 @@ fn sais_impl<A: Alphabet, Idx: ArrayIndex>(
     text: &[A::Symbol],
     alphabet: A,
 ) -> Box<[Idx]> {
-    assert!(index::fits::<Idx, _>(text));
+    assert!(text.fits::<Idx>());
 
     if text.is_empty() {
         return Box::new([]);
@@ -33,22 +32,22 @@ fn sais_impl<A: Alphabet, Idx: ArrayIndex>(
     // Write rank of LMS-substring into the suffix array
     let mut iter = lms_sorted
         .iter()
-        .map(|i| (i, lms_str_from_suffix(text.suffix(i.to_usize()))))
+        .map(|i| (i, lms_str_from_suffix(text.suffix(i.as_()))))
         .peekable();
 
     let mut rank = Idx::ZERO;
     while let (Some((i, prev)), next) = (iter.next(), iter.peek()) {
-        sa[i.to_usize()] = rank;
+        sa[i.as_()] = rank;
         if next.map_or(true, |(_, next)| &prev != next) {
             rank += Idx::ONE;
         }
     }
 
-    if rank.to_usize() == lms_sorted.len() {
+    if rank.as_() == lms_sorted.len() {
         sa.fill(Idx::ZERO);
         let mut lms_iter = lms_sorted.iter();
         for (&i, &j) in lms_buckets.lms_buckets() {
-            zip(&mut sa[i.to_usize()..j.to_usize()], lms_iter.by_ref())
+            zip(&mut sa[i.as_()..j.as_()], lms_iter.by_ref())
                 .for_each(|(dst, lms)| *dst = *lms);
         }
     } else {
@@ -79,9 +78,9 @@ fn partial_sort_lms<A: Alphabet, Idx: ArrayIndex>(
     let mut lms_sorted = Vec::with_capacity(lms_buckets.count());
     lms_sorted.extend(
         s_buckets(buckets, lms_buckets)
-            .flat_map(|(&i, &j)| &sa[i.to_usize()..j.to_usize()])
+            .flat_map(|(&i, &j)| &sa[i.as_()..j.as_()])
             .filter(|&&i| i > Idx::ZERO)
-            .filter(|&&i| text[i.to_usize() - 1] > text[i.to_usize()])
+            .filter(|&&i| text[i.as_() - 1] > text[i.as_()])
             .copied(),
     );
 
@@ -117,8 +116,8 @@ fn sort_lms_recursive<A: Alphabet, Idx: ArrayIndex>(
     let mut lms_iter = lms_sa.iter();
 
     for (&i, &j) in lms_buckets.lms_buckets() {
-        zip(&mut sa[i.to_usize()..j.to_usize()], lms_iter.by_ref())
-            .for_each(|(dst, lms)| *dst = lms_sorted[lms.to_usize()]);
+        zip(&mut sa[i.as_()..j.as_()], lms_iter.by_ref())
+            .for_each(|(dst, lms)| *dst = lms_sorted[lms.as_()]);
     }
 }
 
@@ -132,19 +131,19 @@ fn induce_l_suffixes<A: Alphabet, Idx: ArrayIndex>(
     // Emulate S* suffix of guardian element
     if let Some(last) = text.last() {
         let idx = buckets.get_mut(*last).take_first();
-        sa[idx.to_usize()] = (sa.len() - 1).to_index();
+        sa[idx.as_()] = (sa.len() - 1).to_index();
     }
 
     for i in 0..sa.len() {
         if sa[i] != Idx::ZERO {
-            let text_lhs = text[sa[i].to_usize() - 1];
-            let text_rhs = text[sa[i].to_usize()];
+            let text_lhs = text[sa[i].as_() - 1];
+            let text_rhs = text[sa[i].as_()];
             let bucket = buckets.get(text_rhs);
 
             let ord = text_lhs.cmp(&text_rhs);
-            if ord.is_gt() || (ord.is_eq() && i < bucket.begin().to_usize()) {
+            if ord.is_gt() || (ord.is_eq() && i < bucket.begin().as_()) {
                 let idx = buckets.get_mut(text_lhs).take_first();
-                sa[idx.to_usize()] = sa[i] - Idx::ONE;
+                sa[idx.as_()] = sa[i] - Idx::ONE;
             }
         }
     }
@@ -158,14 +157,14 @@ fn induce_s_suffixes<A: Alphabet, Idx: ArrayIndex>(
 ) {
     for i in (0..sa.len()).rev() {
         if sa[i] != Idx::ZERO {
-            let text_lhs = text[sa[i].to_usize() - 1];
-            let text_rhs = text[sa[i].to_usize()];
+            let text_lhs = text[sa[i].as_() - 1];
+            let text_rhs = text[sa[i].as_()];
             let bucket = buckets.get(text_rhs);
 
             let ord = text_lhs.cmp(&text_rhs);
-            if ord.is_lt() || (ord.is_eq() && i >= bucket.begin().to_usize()) {
+            if ord.is_lt() || (ord.is_eq() && i >= bucket.begin().as_()) {
                 let idx = buckets.get_mut(text_lhs).take_last();
-                sa[idx.to_usize()] = sa[i] - Idx::ONE;
+                sa[idx.as_()] = sa[i] - Idx::ONE;
             }
         }
     }
@@ -176,42 +175,33 @@ fn induce_s_suffixes<A: Alphabet, Idx: ArrayIndex>(
 pub(super) mod alphabet {
     use std::{fmt::Debug, marker::PhantomData};
 
-    use crate::index::ArrayIndex;
+    use crate::index::{ArrayIndex, AsPrimitive};
 
-    pub(super) trait Symbol: Sized + Copy + Ord + Debug {
+    pub(super) trait Symbol:
+        Sized + Copy + Ord + Debug + AsPrimitive<usize>
+    {
         fn min_value() -> Self;
-        fn to_index(self) -> usize;
     }
 
     // TODO what about i8, i16, ...
 
     impl Symbol for u8 {
-        fn to_index(self) -> usize { self.into() }
-
         fn min_value() -> Self { 0 }
     }
 
     impl Symbol for u16 {
-        fn to_index(self) -> usize { self.into() }
-
         fn min_value() -> Self { 0 }
     }
 
     impl Symbol for u32 {
-        fn to_index(self) -> usize { self as usize }
-
         fn min_value() -> Self { 0 }
     }
 
     impl Symbol for u64 {
-        fn to_index(self) -> usize { self as usize }
-
         fn min_value() -> Self { 0 }
     }
 
     impl Symbol for usize {
-        fn to_index(self) -> usize { self }
-
         fn min_value() -> Self { 0 }
     }
 
@@ -219,10 +209,12 @@ pub(super) mod alphabet {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     pub(super) struct IndexSymbol<Idx: ArrayIndex>(pub Idx);
 
+    impl<Idx: ArrayIndex> AsPrimitive<usize> for IndexSymbol<Idx> {
+        fn as_(self) -> usize { self.0.as_() }
+    }
+
     impl<Idx: ArrayIndex> Symbol for IndexSymbol<Idx> {
         fn min_value() -> Self { Self(ArrayIndex::ZERO) }
-
-        fn to_index(self) -> usize { Idx::to_usize(self.0) }
     }
 
     pub(super) trait Alphabet: Clone {
@@ -281,9 +273,9 @@ mod buckets {
         ops::Deref,
     };
 
-    use super::alphabet::{Alphabet, Symbol};
+    use super::alphabet::Alphabet;
     use super::lms::LMSIter;
-    use crate::index::ArrayIndex;
+    use crate::index::{ArrayIndex, AsPrimitive, ToIndex};
 
     pub(super) type Iter<'a, 'b, T> = Zip<slice::Iter<'a, T>, slice::Iter<'b, T>>;
 
@@ -299,7 +291,7 @@ mod buckets {
         let lms_count = LMSIter::new(text)
             .inspect(|&lms| {
                 let idx: Idx = lms_buckets.get_mut(text[lms]).take_last();
-                sa[idx.to_usize()] = Idx::from_usize(lms);
+                sa[idx.as_()] = lms.to_index();
             })
             .count();
 
@@ -333,7 +325,7 @@ mod buckets {
         pub(super) fn reset(mut self, text: &[A::Symbol]) -> Buckets<A, Idx> {
             let (last, head) = self.buckets.end.as_mut().split_last_mut().unwrap();
             head.clone_from_slice(&self.buckets.begin.as_ref()[1..]);
-            *last = Idx::from_usize(text.len());
+            *last = text.len().to_index();
 
             self.buckets
         }
@@ -351,7 +343,7 @@ mod buckets {
         fn new(text: &[A::Symbol], alphabet: A) -> Self {
             let mut histogram = alphabet.buckets::<Idx>();
             for c in text {
-                histogram.as_mut()[c.to_index()] += Idx::ONE;
+                histogram.as_mut()[c.as_()] += Idx::ONE;
             }
 
             let mut buckets_begin = alphabet.buckets::<Idx>();
@@ -373,15 +365,15 @@ mod buckets {
 
         pub fn get(&self, symbol: A::Symbol) -> Bucket<&Idx> {
             Bucket {
-                begin: &self.begin.as_ref()[symbol.to_index()],
-                end: &self.end.as_ref()[symbol.to_index()],
+                begin: &self.begin.as_ref()[symbol.as_()],
+                end: &self.end.as_ref()[symbol.as_()],
             }
         }
 
         pub fn get_mut(&mut self, symbol: A::Symbol) -> Bucket<&mut Idx> {
             Bucket {
-                begin: &mut self.begin.as_mut()[symbol.to_index()],
-                end: &mut self.end.as_mut()[symbol.to_index()],
+                begin: &mut self.begin.as_mut()[symbol.as_()],
+                end: &mut self.end.as_mut()[symbol.as_()],
             }
         }
     }
@@ -487,7 +479,7 @@ mod test {
     const A: ByteAlphabet = ByteAlphabet;
 
     fn convert<I: ArrayIndex, J: ArrayIndex>(arr: &[I]) -> Box<[J]> {
-        arr.iter().map(|i| i.to_usize().to_index()).collect()
+        arr.iter().map(|i| i.as_().to_index()).collect()
     }
 
     macro_rules! assert_sais_eq {
