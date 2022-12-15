@@ -1,63 +1,68 @@
 mod sais;
 
 use std::fmt::Debug;
-use std::{iter::zip, ops::Deref};
+use std::iter::zip;
 
 use self::result::MemoryResult;
 use crate::index::{ArrayIndex, ToIndex};
 use crate::text::Text;
 
 #[allow(unused)]
-pub fn naive<T: Ord + Debug, Idx: ArrayIndex>(text: &Text<T>) -> SuffixArray<Idx> {
+pub fn naive<T: Ord + Debug, Idx: ArrayIndex>(text: &Text<T>) -> SuffixArray<T, Idx> {
     assert!(text.fits_index::<Idx>());
 
     let mut sa: Box<_> = (0..text.len()).map(Idx::from_usize).collect();
     sa.sort_by_key(|i| &text[*i..]);
 
-    SuffixArray(sa)
+    SuffixArray { text, sa }
 }
 
-pub fn sais<Idx: ArrayIndex>(text: &Text<u8>) -> MemoryResult<SuffixArray<Idx>> {
+pub fn sais<Idx: ArrayIndex>(text: &Text<u8>) -> MemoryResult<SuffixArray<u8, Idx>> {
     sais::sais(text)
 }
 
 /// TODO: Invariants:
 /// - sa is permutation of (0, sa.len())
 /// TODO add reference to text
+/// TODO remove Array Index bound
 #[derive(Debug, Clone)]
-pub struct SuffixArray<Idx: ArrayIndex>(Box<[Idx]>);
-
-impl<Idx: ArrayIndex> Deref for SuffixArray<Idx> {
-    type Target = [Idx];
-
-    fn deref(&self) -> &Self::Target { &self.0 }
+pub struct SuffixArray<'txt, T, Idx> {
+    text: &'txt Text<T>,
+    sa: Box<[Idx]>,
 }
 
-impl<Idx: ArrayIndex> SuffixArray<Idx> {
+impl<'txt, T, Idx: ArrayIndex> SuffixArray<'txt, T, Idx> {
+    pub fn text(&self) -> &'txt Text<T> { self.text }
+
+    pub fn inner(&self) -> &[Idx] { &self.sa }
+
     #[inline(never)]
-    pub fn inverse(&self) -> InverseSuffixArray<Idx> {
+    pub fn inverse(&self) -> InverseSuffixArray<'txt, '_, T, Idx> {
         // TODO use MaybeUninit for optimization
 
-        let mut isa = vec![Idx::ZERO; self.len()];
+        let mut isa = vec![Idx::ZERO; self.sa.len()];
 
-        for (i, sa_i) in self.iter().enumerate() {
+        for (i, sa_i) in self.sa.iter().enumerate() {
             // SAFETY: Because a SuffixArray is a permutation of (0, len),
             // sa_i is guaranteed to not be out of bounds for isa
             unsafe { *isa.get_unchecked_mut(sa_i.as_()) = i.to_index() };
         }
 
-        InverseSuffixArray(isa.into_boxed_slice())
+        InverseSuffixArray { sa: self, isa: isa.into_boxed_slice() }
     }
 
     #[allow(unused)]
-    pub fn verify<T: Ord + Debug>(&self, text: &Text<T>) {
-        let is_increasing = zip(self.0.iter(), self.0.iter().skip(1))
+    pub fn verify(&self, text: &Text<T>)
+    where
+        T: Ord + Debug,
+    {
+        let is_increasing = zip(self.sa.iter(), self.sa.iter().skip(1))
             .all(|(i, j)| text[*i..] < text[*j..]);
         assert!(is_increasing, "the suffix array is not sorted in increasing order");
 
 
         let mut arr = vec![false; text.len()];
-        self.0.iter().for_each(|i| arr[i.as_()] = true);
+        self.sa.iter().for_each(|i| arr[i.as_()] = true);
         assert!(
             arr.iter().all(|b| *b),
             "the suffix array is not a permutation of [0..len)"
@@ -68,12 +73,15 @@ impl<Idx: ArrayIndex> SuffixArray<Idx> {
 /// TODO: Invariants:
 /// - sa is permutation of (0, sa.len())
 #[derive(Debug, Clone)]
-pub struct InverseSuffixArray<Idx: ArrayIndex>(Box<[Idx]>);
+pub struct InverseSuffixArray<'sa, 'txt, T, Idx> {
+    sa: &'sa SuffixArray<'txt, T, Idx>,
+    isa: Box<[Idx]>,
+}
 
-impl<Idx: ArrayIndex> Deref for InverseSuffixArray<Idx> {
-    type Target = [Idx];
+impl<'sa, 'txt, T, Idx: ArrayIndex> InverseSuffixArray<'sa, 'txt, T, Idx> {
+    pub fn sa(&self) -> &'sa SuffixArray<'txt, T, Idx> { self.sa }
 
-    fn deref(&self) -> &Self::Target { &self.0 }
+    pub fn inner(&self) -> &[Idx] { &self.isa }
 }
 
 pub mod result {

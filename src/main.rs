@@ -1,9 +1,9 @@
 // TODO use stricter clippy options
 
-mod index;
-mod lcp_array;
-mod suffix_array;
-mod text;
+pub mod index;
+pub mod lcp_array;
+pub mod suffix_array;
+pub mod text;
 
 use std::process::{self, ExitCode};
 use std::time::{Duration, Instant};
@@ -16,7 +16,8 @@ use suffix_array as sa;
 use crate::suffix_array::result::MemoryResult;
 use crate::text::Text;
 
-fn main() -> Result<TestResults, String> {
+pub fn main() -> Result<TestResults, String> {
+    #[inline(never)]
     fn run_timed<T>(f: impl FnOnce() -> T) -> (T, Duration) {
         let before = Instant::now();
         let result = f();
@@ -31,15 +32,18 @@ fn main() -> Result<TestResults, String> {
         #[cfg(feature = "verify")]
         sa.verify(text);
 
-        let (lcp_naive, lcp_naive_time) = run_timed(|| lcp::naive(text, &sa));
-        let (lcp_kasai, lcp_kasai_time) = run_timed(|| {
-            let isa = sa.inverse();
-            lcp::kasai(text, &sa, &isa)
-        });
-        let (lcp_phi, lcp_phi_time) = run_timed(|| lcp::phi(text, &sa));
+        let (_lcp_naive, lcp_naive_time) = run_timed(|| lcp::naive(&sa));
+        let (_lcp_kasai, lcp_kasai_time) = run_timed(|| lcp::kasai(&sa.inverse()));
+        let (_lcp_phi, lcp_phi_time) = run_timed(|| lcp::phi(&sa));
 
-        assert_eq!(*lcp_naive, *lcp_kasai);
-        assert_eq!(*lcp_kasai, *lcp_phi);
+        #[cfg(feature = "verify")]
+        {
+            _lcp_naive.verify();
+            _lcp_kasai.verify();
+            _lcp_phi.verify();
+        }
+        // assert_eq!(lcp_naive.inner(), lcp_kasai.inner());
+        // assert_eq!(lcp_kasai.inner(), lcp_phi.inner());
 
         TestResults { sa_time, sa_memory, lcp_naive_time, lcp_kasai_time, lcp_phi_time }
     }

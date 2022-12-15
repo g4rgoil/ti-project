@@ -6,11 +6,13 @@ use super::SuffixArray;
 use crate::index::{ArrayIndex, ToIndex};
 use crate::text::Text;
 
-pub(super) fn sais<Idx: ArrayIndex>(text: &Text<u8>) -> MemoryResult<SuffixArray<Idx>> {
+pub(super) fn sais<Idx: ArrayIndex>(
+    text: &Text<u8>,
+) -> MemoryResult<SuffixArray<u8, Idx>> {
     assert!(text.fits_index::<Idx>());
 
-    let MemoryResult { value, memory } = sais_impl(text, ByteAlphabet);
-    MemoryResult { value: SuffixArray(value), memory }
+    let MemoryResult { value: sa, memory } = sais_impl(text, ByteAlphabet);
+    MemoryResult { value: SuffixArray { text, sa }, memory }
 }
 
 fn sais_impl<A: Alphabet, Idx: ArrayIndex>(
@@ -616,7 +618,7 @@ mod test {
     fn test_sais_lorem_ipsum() {
         let text = b"Lorem ipsum dolor sit amet, qui minim labore adipisicing \
                    minim sint cillum sint consectetur cupidatat.";
-        let sa = &*sa::naive(text.into()).0;
+        let sa = sa::naive(text.into()).sa;
         assert_eq!(*sais_impl::<_, usize>(text.into(), A).value, *sa);
         assert_sais_eq!((text.into(), A), &sa, u8, u16, u32, u64,);
     }
@@ -624,7 +626,7 @@ mod test {
     #[test]
     fn test_sais_lorem_ipsum_long() {
         let text = LOREM_IPSUM_LONG;
-        let sa = &*sa::naive(text.into()).0;
+        let sa = sa::naive(text.into()).sa;
         assert_eq!(*sais_impl::<_, usize>(text.into(), A).value, *sa);
         assert_sais_eq!((text.into(), A), &sa, u16, u32, u64,);
     }
@@ -633,15 +635,15 @@ mod test {
     #[should_panic]
     fn test_sais_lorem_ipsum_long_panick() {
         let text = LOREM_IPSUM_LONG;
-        let sa = &*sa::naive::<_, usize>(text.into()).0;
-        assert_eq!(*sais_impl::<_, u8>(text.into(), A).value, *convert(sa));
+        let sa = sa::naive::<_, usize>(text.into()).sa;
+        assert_eq!(*sais_impl::<_, u8>(text.into(), A).value, *convert(&sa));
     }
 
 
     #[test]
     fn test_sais_dna() {
         let text = b"CAACAACAAAT";
-        let sa = &*sa::naive(text.into()).0;
+        let sa = sa::naive(text.into()).sa;
         assert_eq!(*sais_impl::<_, usize>(text.into(), A).value, *sa);
         assert_sais_eq!((text.into(), A), &sa, u8, u16, u32, u64,);
     }
@@ -649,7 +651,7 @@ mod test {
     #[test]
     fn test_sais_dna_2() {
         let text = b"TGTGGGACTGTGGAG";
-        let sa = &*sa::naive(text.into()).0;
+        let sa = sa::naive(text.into()).sa;
         assert_eq!(*sais_impl::<_, usize>(text.into(), A).value, *sa);
         assert_sais_eq!((text.into(), A), &sa, u8, u16, u32, u64,);
     }
@@ -657,7 +659,7 @@ mod test {
     #[test]
     fn test_sais_u8_maximum() {
         let text = &[0; 255];
-        let sa = &*sa::naive(text.into()).0;
+        let sa = sa::naive(text.into()).sa;
         assert_eq!(*sais_impl::<_, usize>(text.into(), A).value, *sa);
         assert_sais_eq!((text.into(), A), &sa, u8, u16, u32, u64,);
     }
