@@ -5,29 +5,27 @@ use std::{iter::zip, ops::Deref};
 
 use self::result::MemoryResult;
 use crate::index::{ArrayIndex, ToIndex};
-use crate::TextExt;
+use crate::text::Text;
 
 #[allow(unused)]
-pub fn naive<T: Ord + Debug, Idx: ArrayIndex>(text: &[T]) -> SuffixArray<Idx> {
-    // TODO This should return a result instead
-    assert!(text.fits::<Idx>());
+pub fn naive<T: Ord + Debug, Idx: ArrayIndex>(text: &Text<T>) -> SuffixArray<Idx> {
+    assert!(text.fits_index::<Idx>());
 
     let mut sa: Box<_> = (0..text.len()).map(Idx::from_usize).collect();
-    sa.sort_by_key(|i| text.suffix(i.as_()));
+    sa.sort_by_key(|i| &text[*i..]);
 
     SuffixArray(sa)
 }
 
-pub fn sais<Idx: ArrayIndex>(text: &[u8]) -> MemoryResult<SuffixArray<Idx>> {
-    let sa = sais::sais(text);
-    // sa.value.verify(text);
-    sa
+pub fn sais<Idx: ArrayIndex>(text: &Text<u8>) -> MemoryResult<SuffixArray<Idx>> {
+    sais::sais(text)
 }
 
 /// TODO: Invariants:
 /// - sa is permutation of (0, sa.len())
+/// TODO add reference to text
 #[derive(Debug, Clone)]
-pub struct SuffixArray<Idx: ArrayIndex = usize>(Box<[Idx]>);
+pub struct SuffixArray<Idx: ArrayIndex>(Box<[Idx]>);
 
 impl<Idx: ArrayIndex> Deref for SuffixArray<Idx> {
     type Target = [Idx];
@@ -51,22 +49,26 @@ impl<Idx: ArrayIndex> SuffixArray<Idx> {
         InverseSuffixArray(isa.into_boxed_slice())
     }
 
-    // TODO move to test module
     #[allow(unused)]
-    pub fn verify<T: Ord + Debug>(&self, text: &[T]) {
-        assert!(zip(self.0.iter(), self.0.iter().skip(1))
-            .all(|(i, j)| { text.suffix(i.as_()) < text.suffix(j.as_()) }));
+    pub fn verify<T: Ord + Debug>(&self, text: &Text<T>) {
+        let is_increasing = zip(self.0.iter(), self.0.iter().skip(1))
+            .all(|(i, j)| text[*i..] < text[*j..]);
+        assert!(is_increasing, "the suffix array is not sorted in increasing order");
+
 
         let mut arr = vec![false; text.len()];
         self.0.iter().for_each(|i| arr[i.as_()] = true);
-        assert_eq!(arr, vec![true; text.len()]);
+        assert!(
+            arr.iter().all(|b| *b),
+            "the suffix array is not a permutation of [0..len)"
+        );
     }
 }
 
 /// TODO: Invariants:
 /// - sa is permutation of (0, sa.len())
 #[derive(Debug, Clone)]
-pub struct InverseSuffixArray<Idx: ArrayIndex = usize>(Box<[Idx]>);
+pub struct InverseSuffixArray<Idx: ArrayIndex>(Box<[Idx]>);
 
 impl<Idx: ArrayIndex> Deref for InverseSuffixArray<Idx> {
     type Target = [Idx];
@@ -78,6 +80,7 @@ pub mod result {
     use std::marker::PhantomData;
 
     #[derive(Debug, Clone, Copy)]
+    #[must_use]
     pub struct MemoryResult<T> {
         pub value: T,
         pub memory: usize,
@@ -96,7 +99,7 @@ pub mod result {
 
     #[derive(Debug, Clone, Copy)]
     pub struct Builder<T> {
-        memory: usize,
+        pub memory: usize,
         _phantom: PhantomData<T>,
     }
 

@@ -3,18 +3,18 @@
 mod index;
 mod lcp_array;
 mod suffix_array;
+mod text;
 
-use std::{
-    env, fs, io,
-    process::{self, ExitCode},
-    time::{Duration, Instant},
-};
+use std::process::{self, ExitCode};
+use std::time::{Duration, Instant};
+use std::{env, fs, io};
 
 use index::ArrayIndex;
 use lcp_array as lcp;
 use suffix_array as sa;
 
 use crate::suffix_array::result::MemoryResult;
+use crate::text::Text;
 
 fn main() -> Result<TestResults, String> {
     fn run_timed<T>(f: impl FnOnce() -> T) -> (T, Duration) {
@@ -24,44 +24,41 @@ fn main() -> Result<TestResults, String> {
         (result, elapsed)
     }
 
-    fn run<Idx: ArrayIndex>(input: &[u8]) -> TestResults {
-        let (result, sa_time) = run_timed(|| sa::sais::<Idx>(input));
+    fn run<Idx: ArrayIndex>(text: &Text<u8>) -> TestResults {
+        let (result, sa_time) = run_timed(|| sa::sais::<Idx>(text));
         let MemoryResult { value: sa, memory: sa_memory } = result;
 
-        let (lcp_naive, lcp_naive_time) = run_timed(|| lcp::naive(input, &sa));
+        #[cfg(feature = "verify")]
+        sa.verify(text);
+
+        let (lcp_naive, lcp_naive_time) = run_timed(|| lcp::naive(text, &sa));
         let (lcp_kasai, lcp_kasai_time) = run_timed(|| {
             let isa = sa.inverse();
-            lcp::kasai(input, &sa, &isa)
+            lcp::kasai(text, &sa, &isa)
         });
-        let (lcp_phi, lcp_phi_time) = run_timed(|| lcp::phi(input, &sa));
+        let (lcp_phi, lcp_phi_time) = run_timed(|| lcp::phi(text, &sa));
 
         assert_eq!(*lcp_naive, *lcp_kasai);
         assert_eq!(*lcp_kasai, *lcp_phi);
 
-        TestResults {
-            sa_time,
-            sa_memory,
-            lcp_naive_time,
-            lcp_kasai_time,
-            lcp_phi_time,
-        }
+        TestResults { sa_time, sa_memory, lcp_naive_time, lcp_kasai_time, lcp_phi_time }
     }
 
-    let input_path = env::args()
-        .nth(1)
-        .ok_or_else(|| "expected exactly 1 argument".to_owned())?;
+    let input_path =
+        env::args().nth(1).ok_or_else(|| "expected exactly 1 argument".to_owned())?;
     let input_file = fs::read(input_path).map_err(|e| e.to_string())?;
+    let text = Text::from_slice(&input_file);
 
-    // todo add cfg[target_width ] options
-    if input_file.fits::<u16>() {
-        // TODO this is pretty much useless
-        Ok(run::<u16>(&input_file))
-    } else if input_file.fits::<u32>() {
-        Ok(run::<u32>(&input_file))
-    } else if input_file.fits::<u64>() {
-        Ok(run::<u64>(&input_file))
-    } else {
-        Ok(run::<usize>(&input_file))
+    match () {
+        _ if text.fits_index::<u16>() => Ok(run::<u16>(text)),
+
+        #[cfg(any(target_pointer_width = "64", target_pointer_width = "32"))]
+        _ if text.fits_index::<u32>() => Ok(run::<u32>(text)),
+
+        #[cfg(target_pointer_width = "64")]
+        _ if text.fits_index::<u64>() => Ok(run::<u64>(text)),
+
+        _ => Ok(run::<usize>(text)),
     }
 }
 
@@ -94,17 +91,4 @@ impl process::Termination for TestResults {
         );
         ExitCode::SUCCESS
     }
-}
-
-// TODO free function instead of Trait? together with common_prefix?
-pub trait TextExt<T: Ord> {
-    fn suffix(&self, i: usize) -> &Self;
-
-    fn fits<Idx: ArrayIndex>(&self) -> bool;
-}
-
-impl<T: Ord> TextExt<T> for [T] {
-    fn suffix(&self, i: usize) -> &Self { &self[i..] }
-
-    fn fits<Idx: ArrayIndex>(&self) -> bool { self.len() <= Idx::MAX.as_() }
 }

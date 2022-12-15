@@ -4,18 +4,20 @@ use self::{alphabet::*, buckets::*, lms::*};
 use super::result::MemoryResult;
 use super::SuffixArray;
 use crate::index::{ArrayIndex, ToIndex};
-use crate::TextExt;
+use crate::text::Text;
 
-pub(super) fn sais<Idx: ArrayIndex>(text: &[u8]) -> MemoryResult<SuffixArray<Idx>> {
+pub(super) fn sais<Idx: ArrayIndex>(text: &Text<u8>) -> MemoryResult<SuffixArray<Idx>> {
+    assert!(text.fits_index::<Idx>());
+
     let MemoryResult { value, memory } = sais_impl(text, ByteAlphabet);
     MemoryResult { value: SuffixArray(value), memory }
 }
 
 fn sais_impl<A: Alphabet, Idx: ArrayIndex>(
-    text: &[A::Symbol],
+    text: &Text<A::Symbol>,
     alphabet: A,
 ) -> MemoryResult<Box<[Idx]>> {
-    assert!(text.fits::<Idx>());
+    debug_assert!(text.fits_index::<Idx>());
 
     let mut result = MemoryResult::builder();
     if text.is_empty() {
@@ -29,14 +31,12 @@ fn sais_impl<A: Alphabet, Idx: ArrayIndex>(
     result.add_values::<Idx>(4 * alphabet.size());
     let (mut buckets, mut lms_buckets) = init_buckets(text, &mut sa, alphabet);
 
-    let mut lms_sorted = partial_sort_lms(text, &mut sa, &mut buckets, &lms_buckets)
-        .add_to(&mut result);
+    let mut lms_sorted =
+        partial_sort_lms(text, &mut sa, &mut buckets, &lms_buckets).add_to(&mut result);
 
     // Write rank of LMS-substring into the suffix array
-    let mut iter = lms_sorted
-        .iter()
-        .map(|i| (i, lms_str_from_suffix(text.suffix(i.as_()))))
-        .peekable();
+    let mut iter =
+        lms_sorted.iter().map(|&i| (i, lms_str_from_suffix(&text[i..]))).peekable();
 
     let mut rank = Idx::ZERO;
     while let (Some((i, prev)), next) = (iter.next(), iter.peek()) {
@@ -54,7 +54,8 @@ fn sais_impl<A: Alphabet, Idx: ArrayIndex>(
                 .for_each(|(dst, lms)| *dst = *lms);
         }
     } else {
-        sort_lms_recursive(text, &mut sa, &mut lms_buckets, &mut lms_sorted);
+        sort_lms_recursive(text, &mut sa, &mut lms_buckets, &mut lms_sorted)
+            .add_to(&mut result);
     }
 
     let mut buckets = lms_buckets.reset(text);
@@ -68,7 +69,7 @@ fn sais_impl<A: Alphabet, Idx: ArrayIndex>(
 #[inline(always)]
 // TODO need to  be specific here about post conditions
 fn partial_sort_lms<A: Alphabet, Idx: ArrayIndex>(
-    text: &[A::Symbol],
+    text: &Text<A::Symbol>,
     sa: &mut [Idx],
     buckets: &mut Buckets<A, Idx>,
     lms_buckets: &LMSBuckets<A, Idx>,
@@ -86,8 +87,7 @@ fn partial_sort_lms<A: Alphabet, Idx: ArrayIndex>(
     lms_sorted.extend(
         s_buckets(buckets, lms_buckets)
             .flat_map(|(&i, &j)| &sa[i.as_()..j.as_()])
-            .filter(|&&i| i > Idx::ZERO)
-            .filter(|&&i| text[i.as_() - 1] > text[i.as_()])
+            .filter(|&&i| i > Idx::ZERO && text[i - Idx::ONE] > text[i])
             .copied(),
     );
 
@@ -95,11 +95,11 @@ fn partial_sort_lms<A: Alphabet, Idx: ArrayIndex>(
 }
 
 #[inline(always)]
-fn sort_lms_recursive<A: Alphabet, Idx: ArrayIndex, Idx2: ArrayIndex>(
-    text: &[A::Symbol],
+fn sort_lms_recursive<A: Alphabet, Idx: ArrayIndex>(
+    text: &Text<A::Symbol>,
     sa: &mut [Idx],
     lms_buckets: &mut LMSBuckets<A, Idx>,
-    lms_sorted: &mut [Idx2],
+    lms_sorted: &mut [Idx],
 ) -> MemoryResult<()> {
     let mut result = MemoryResult::builder();
 
@@ -117,14 +117,14 @@ fn sort_lms_recursive<A: Alphabet, Idx: ArrayIndex, Idx2: ArrayIndex>(
     }
 
     sa.fill(Idx::ZERO);
-    let lms_sa = sais_impl::<_, Idx>(&lms_text, lms_alphabet).add_to(&mut result);
+    let lms_sa = sais_impl::<_, Idx>(Text::from_slice(&lms_text), lms_alphabet)
+        .add_to(&mut result);
 
     // Put the sorted LMS-suffixes at the end of the buckets
     let mut lms_iter = lms_sa.iter();
     for (&i, &j) in lms_buckets.lms_buckets() {
         zip(&mut sa[i.as_()..j.as_()], lms_iter.by_ref())
-            // TODO this conversion is dodgy af
-            .for_each(|(dst, lms)| *dst = lms_sorted[lms.as_()].as_().to_index());
+            .for_each(|(dst, lms)| *dst = lms_sorted[lms.as_()]);
     }
 
     result.build(())
@@ -133,20 +133,20 @@ fn sort_lms_recursive<A: Alphabet, Idx: ArrayIndex, Idx2: ArrayIndex>(
 
 #[inline(always)]
 fn induce_l_suffixes<A: Alphabet, Idx: ArrayIndex>(
-    text: &[A::Symbol],
+    text: &Text<A::Symbol>,
     sa: &mut [Idx],
     buckets: &mut Buckets<A, Idx>,
 ) {
     // Emulate S* suffix of guardian element
-    if let Some(last) = text.last() {
+    if let Some(last) = text.0.last() {
         let idx = buckets.get_mut(*last).take_first();
         sa[idx.as_()] = (sa.len() - 1).to_index();
     }
 
     for i in 0..sa.len() {
         if sa[i] != Idx::ZERO {
-            let text_lhs = text[sa[i].as_() - 1];
-            let text_rhs = text[sa[i].as_()];
+            let text_lhs = text[sa[i] - Idx::ONE];
+            let text_rhs = text[sa[i]];
             let bucket = buckets.get(text_rhs);
 
             let ord = text_lhs.cmp(&text_rhs);
@@ -160,14 +160,14 @@ fn induce_l_suffixes<A: Alphabet, Idx: ArrayIndex>(
 
 #[inline(always)]
 fn induce_s_suffixes<A: Alphabet, Idx: ArrayIndex>(
-    text: &[A::Symbol],
+    text: &Text<A::Symbol>,
     sa: &mut [Idx],
     buckets: &mut Buckets<A, Idx>,
 ) {
     for i in (0..sa.len()).rev() {
         if sa[i] != Idx::ZERO {
-            let text_lhs = text[sa[i].as_() - 1];
-            let text_rhs = text[sa[i].as_()];
+            let text_lhs = text[sa[i] - Idx::ONE];
+            let text_rhs = text[sa[i]];
             let bucket = buckets.get(text_rhs);
 
             let ord = text_lhs.cmp(&text_rhs);
@@ -284,12 +284,13 @@ mod buckets {
     use super::alphabet::Alphabet;
     use super::lms::LMSIter;
     use crate::index::{ArrayIndex, AsPrimitive, ToIndex};
+    use crate::text::Text;
 
-    pub(super) type Iter<'a, 'b, T> = Zip<slice::Iter<'a, T>, slice::Iter<'b, T>>;
+    pub(super) type Iter<'a, T> = Zip<slice::Iter<'a, T>, slice::Iter<'a, T>>;
 
     #[inline(always)]
     pub(super) fn init_buckets<A: Alphabet, Idx: ArrayIndex>(
-        text: &[A::Symbol],
+        text: &Text<A::Symbol>,
         sa: &mut [Idx],
         alphabet: A,
     ) -> (Buckets<A, Idx>, LMSBuckets<A, Idx>) {
@@ -307,10 +308,10 @@ mod buckets {
     }
 
     #[inline(always)]
-    pub(super) fn s_buckets<'a, 'b, A: Alphabet, Idx: ArrayIndex>(
+    pub(super) fn s_buckets<'a, A: Alphabet, Idx: ArrayIndex>(
         buckets: &'a Buckets<A, Idx>,
-        lms_buckets: &'b LMSBuckets<A, Idx>,
-    ) -> Iter<'a, 'b, Idx> {
+        lms_buckets: &'a LMSBuckets<A, Idx>,
+    ) -> Iter<'a, Idx> {
         zip(buckets.end.as_ref(), &lms_buckets.buckets.begin.as_ref()[1..])
     }
 
@@ -330,7 +331,7 @@ mod buckets {
         }
 
         #[inline(always)]
-        pub(super) fn reset(mut self, text: &[A::Symbol]) -> Buckets<A, Idx> {
+        pub(super) fn reset(mut self, text: &Text<A::Symbol>) -> Buckets<A, Idx> {
             let (last, head) = self.buckets.end.as_mut().split_last_mut().unwrap();
             head.clone_from_slice(&self.buckets.begin.as_ref()[1..]);
             *last = text.len().to_index();
@@ -348,7 +349,7 @@ mod buckets {
     }
 
     impl<A: Alphabet, Idx: ArrayIndex> Buckets<A, Idx> {
-        fn from_text(text: &[A::Symbol], alphabet: A) -> Self {
+        fn from_text(text: &Text<A::Symbol>, alphabet: A) -> Self {
             let mut histogram = alphabet.buckets::<Idx>();
             for c in text {
                 histogram.as_mut()[c.as_()] += Idx::ONE;
@@ -415,6 +416,7 @@ mod lms {
     use std::slice;
 
     use super::alphabet::Symbol;
+    use crate::text::Text;
 
     // TODO maybe remove this entirely
     pub(super) struct LMSIter<'a, S> {
@@ -423,11 +425,8 @@ mod lms {
     }
 
     impl<'a, S> LMSIter<'a, S> {
-        pub fn new(text: &'a [S]) -> Self {
-            LMSIter {
-                text: text.iter().enumerate().rev().peekable(),
-                decreasing: false,
-            }
+        pub fn new(text: &'a Text<S>) -> Self {
+            LMSIter { text: text.iter().enumerate().rev().peekable(), decreasing: false }
         }
     }
 
@@ -453,7 +452,7 @@ mod lms {
         }
     }
 
-    pub(super) fn lms_str_from_suffix<S: Symbol>(suffix: &[S]) -> &[S] {
+    pub(super) fn lms_str_from_suffix<S: Symbol>(suffix: &Text<S>) -> &Text<S> {
         // TODO is this the most efficient way possible?
         let (mut prev, mut increasing, mut end) = (S::min_value(), true, 0);
         for (i, &next) in suffix.iter().enumerate() {
@@ -504,153 +503,162 @@ mod test {
         };
     }
 
-    #[test]
-    #[ignore]
-    fn test_lms_iter_empty() {
-        let mut iter = lms::LMSIter::<u8>::new(&[]);
-        assert_eq!(iter.next(), None);
-    }
-
-    #[test]
-    #[ignore]
-    fn test_lms_iter_slides() {
-        let iter = lms::LMSIter::new(b"ababcabcabba\0");
-        let result: Vec<usize> = iter.collect();
-        assert_eq!(result, &[12, 8, 5, 2]);
-    }
+    // TODO
+    // #[test]
+    // #[ignore]
+    // fn test_lms_iter_empty() {
+    //     let mut iter = lms::LMSIter::<u8>::new(&[]);
+    //     assert_eq!(iter.next(), None);
+    // }
+    //
+    // #[test]
+    // #[ignore]
+    // fn test_lms_iter_slides() {
+    //     let iter = lms::LMSIter::new(b"ababcabcabba\0");
+    //     let result: Vec<usize> = iter.collect();
+    //     assert_eq!(result, &[12, 8, 5, 2]);
+    // }
 
     #[test]
     fn test_lms_str_slides() {
-        assert_eq!(lms::lms_str_from_suffix(b"abcabcabba"), b"abca");
-        assert_eq!(lms::lms_str_from_suffix(b"abcabba"), b"abca");
-        assert_eq!(lms::lms_str_from_suffix(b"abba"), b"abba");
+        assert_eq!(&lms::lms_str_from_suffix(b"abcabcabba".into()).0, b"abca");
+        assert_eq!(&lms::lms_str_from_suffix(b"abcabba".into()).0, b"abca");
+        assert_eq!(&lms::lms_str_from_suffix(b"abba".into()).0, b"abba");
     }
 
     #[test]
     fn test_lms_str_wikipedia() {
-        assert_eq!(lms::lms_str_from_suffix(b"issiissippi"), b"issi");
-        assert_eq!(lms::lms_str_from_suffix(b"iissippi"), b"iissi");
-        assert_eq!(lms::lms_str_from_suffix(b"ippi"), b"ippi");
+        assert_eq!(&lms::lms_str_from_suffix(b"issiissippi".into()).0, b"issi");
+        assert_eq!(&lms::lms_str_from_suffix(b"iissippi".into()).0, b"iissi");
+        assert_eq!(&lms::lms_str_from_suffix(b"ippi".into()).0, b"ippi");
     }
 
     #[test]
     fn test_lms_str_dna() {
-        assert_eq!(lms::lms_str_from_suffix(b"AACAACAAAT"), b"AACA");
-        assert_eq!(lms::lms_str_from_suffix(b"AACAAAT"), b"AACA");
-        assert_eq!(lms::lms_str_from_suffix(b"AAAT"), b"AAAT");
+        assert_eq!(&lms::lms_str_from_suffix(b"AACAACAAAT".into()).0, b"AACA");
+        assert_eq!(&lms::lms_str_from_suffix(b"AACAAAT".into()).0, b"AACA");
+        assert_eq!(&lms::lms_str_from_suffix(b"AAAT".into()).0, b"AAAT");
     }
 
     #[test]
     fn test_lms_str_bug() {
-        assert_eq!(lms::lms_str_from_suffix(b"decbaedecaf"), b"decba");
-        assert_eq!(lms::lms_str_from_suffix(b"aedecaf"), b"aed");
-        assert_eq!(lms::lms_str_from_suffix(b"decaf"), b"deca");
-        assert_eq!(lms::lms_str_from_suffix(b"af"), b"af");
+        assert_eq!(&lms::lms_str_from_suffix(b"decbaedecaf".into()).0, b"decba");
+        assert_eq!(&lms::lms_str_from_suffix(b"aedecaf".into()).0, b"aed");
+        assert_eq!(&lms::lms_str_from_suffix(b"decaf".into()).0, b"deca");
+        assert_eq!(&lms::lms_str_from_suffix(b"af".into()).0, b"af");
     }
 
     #[test]
     fn test_lms_str_dna_bug() {
-        assert_eq!(lms::lms_str_from_suffix(b"GTGGGACTGTGGAG"), b"GTGGGA");
-        assert_eq!(lms::lms_str_from_suffix(b"ACTGTGGAG"), b"ACTG");
-        assert_eq!(lms::lms_str_from_suffix(b"GTGGAG"), b"GTGGA");
-        assert_eq!(lms::lms_str_from_suffix(b"AG"), b"AG");
+        assert_eq!(&lms::lms_str_from_suffix(b"GTGGGACTGTGGAG".into()).0, b"GTGGGA");
+        assert_eq!(&lms::lms_str_from_suffix(b"ACTGTGGAG".into()).0, b"ACTG");
+        assert_eq!(&lms::lms_str_from_suffix(b"GTGGAG".into()).0, b"GTGGA");
+        assert_eq!(&lms::lms_str_from_suffix(b"AG".into()).0, b"AG");
     }
 
     #[test]
     fn test_sais_wikipedia_with_sentinel() {
         let text = b"immissiissippi\0";
         let sa = [14, 13, 6, 0, 10, 3, 7, 2, 1, 12, 11, 5, 9, 4, 8];
-        assert_eq!(*sais_impl::<_, usize>(text, A).value, sa);
-        assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
+        assert_eq!(*sais_impl::<_, usize>(text.into(), A).value, sa);
+        assert_sais_eq!((text.into(), A), &sa, u8, u16, u32, u64,);
     }
 
     #[test]
     fn test_sais_wikipedia_no_sentinel() {
         let text = b"immissiissippi";
         let sa = [13, 6, 0, 10, 3, 7, 2, 1, 12, 11, 5, 9, 4, 8];
-        assert_eq!(*sais_impl::<_, usize>(text, A).value, sa);
-        assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
+        assert_eq!(*sais_impl::<_, usize>(text.into(), A).value, sa);
+        assert_sais_eq!((text.into(), A), &sa, u8, u16, u32, u64,);
     }
 
     #[test]
     fn test_sais_slides_with_sentinel() {
         let text = b"ababcabcabba\0";
         let sa = [12, 11, 0, 8, 5, 2, 10, 1, 9, 6, 3, 7, 4];
-        assert_eq!(*sais_impl::<_, usize>(text, A).value, sa);
-        assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
+        assert_eq!(*sais_impl::<_, usize>(text.into(), A).value, sa);
+        assert_sais_eq!((text.into(), A), &sa, u8, u16, u32, u64,);
     }
 
     #[test]
     fn test_sais_slides_no_sentinel() {
         let text = b"ababcabcabba";
         let sa = [11, 0, 8, 5, 2, 10, 1, 9, 6, 3, 7, 4];
-        assert_eq!(*sais_impl::<_, usize>(text, A).value, sa);
-        assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
+        assert_eq!(*sais_impl::<_, usize>(text.into(), A).value, sa);
+        assert_sais_eq!((text.into(), A), &sa, u8, u16, u32, u64,);
     }
 
     #[test]
     fn test_sais_all_a_with_sentinel() {
         let text = b"aaaaaaaa\0";
         let sa = [8, 7, 6, 5, 4, 3, 2, 1, 0];
-        assert_eq!(*sais_impl::<_, usize>(text, A).value, sa);
-        assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
+        assert_eq!(*sais_impl::<_, usize>(text.into(), A).value, sa);
+        assert_sais_eq!((text.into(), A), &sa, u8, u16, u32, u64,);
     }
 
     #[test]
     fn test_sais_all_a_no_sentinel() {
         let text = b"aaaaaaaa";
         let sa = [7, 6, 5, 4, 3, 2, 1, 0];
-        assert_eq!(*sais_impl::<_, usize>(text, A).value, sa);
-        assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
+        assert_eq!(*sais_impl::<_, usize>(text.into(), A).value, sa);
+        assert_sais_eq!((text.into(), A), &sa, u8, u16, u32, u64,);
     }
 
     #[test]
     fn test_sais_null_character() {
         let text = b"aba\0cabcabba";
         let sa = [3, 11, 2, 0, 8, 5, 10, 1, 9, 6, 7, 4];
-        assert_eq!(*sais_impl::<_, usize>(text, A).value, sa);
-        assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
+        assert_eq!(*sais_impl::<_, usize>(text.into(), A).value, sa);
+        assert_sais_eq!((text.into(), A), &sa, u8, u16, u32, u64,);
     }
 
     #[test]
     fn test_sais_lorem_ipsum() {
         let text = b"Lorem ipsum dolor sit amet, qui minim labore adipisicing \
                    minim sint cillum sint consectetur cupidatat.";
-        let sa = &*sa::naive(text).0;
-        assert_eq!(*sais_impl::<_, usize>(text, A).value, *sa);
-        assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
+        let sa = &*sa::naive(text.into()).0;
+        assert_eq!(*sais_impl::<_, usize>(text.into(), A).value, *sa);
+        assert_sais_eq!((text.into(), A), &sa, u8, u16, u32, u64,);
     }
 
     #[test]
     fn test_sais_lorem_ipsum_long() {
         let text = LOREM_IPSUM_LONG;
-        let sa = &*sa::naive(text).0;
-        assert_eq!(*sais_impl::<_, usize>(text, A).value, *sa);
-        assert_sais_eq!((text, A), &sa, u16, u32, u64,);
+        let sa = &*sa::naive(text.into()).0;
+        assert_eq!(*sais_impl::<_, usize>(text.into(), A).value, *sa);
+        assert_sais_eq!((text.into(), A), &sa, u16, u32, u64,);
     }
 
     #[test]
     #[should_panic]
     fn test_sais_lorem_ipsum_long_panick() {
         let text = LOREM_IPSUM_LONG;
-        let sa = &*sa::naive::<_, usize>(text).0;
-        assert_eq!(*sais_impl::<_, u8>(text, A).value, *convert(sa));
+        let sa = &*sa::naive::<_, usize>(text.into()).0;
+        assert_eq!(*sais_impl::<_, u8>(text.into(), A).value, *convert(sa));
     }
 
 
     #[test]
     fn test_sais_dna() {
         let text = b"CAACAACAAAT";
-        let sa = &*sa::naive(text).0;
-        assert_eq!(*sais_impl::<_, usize>(text, A).value, *sa);
-        assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
+        let sa = &*sa::naive(text.into()).0;
+        assert_eq!(*sais_impl::<_, usize>(text.into(), A).value, *sa);
+        assert_sais_eq!((text.into(), A), &sa, u8, u16, u32, u64,);
     }
 
     #[test]
     fn test_sais_dna_2() {
         let text = b"TGTGGGACTGTGGAG";
-        let sa = &*sa::naive(text).0;
-        assert_eq!(*sais_impl::<_, usize>(text, A).value, *sa);
-        assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
+        let sa = &*sa::naive(text.into()).0;
+        assert_eq!(*sais_impl::<_, usize>(text.into(), A).value, *sa);
+        assert_sais_eq!((text.into(), A), &sa, u8, u16, u32, u64,);
+    }
+
+    #[test]
+    fn test_sais_u8_maximum() {
+        let text = &[0; 255];
+        let sa = &*sa::naive(text.into()).0;
+        assert_eq!(*sais_impl::<_, usize>(text.into(), A).value, *sa);
+        assert_sais_eq!((text.into(), A), &sa, u8, u16, u32, u64,);
     }
 }
