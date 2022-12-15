@@ -1,7 +1,6 @@
 use std::fmt::Debug;
 use std::ops::{Add, AddAssign, Sub, SubAssign};
 
-// TODO move this somewhere it makes more sense
 // TODO where std::ops::Range: DoubleEndedIterator to emulate Step?!
 pub trait ArrayIndex:
     Sized
@@ -77,9 +76,11 @@ pub trait AsPrimitive<T>: 'static + Copy {
 
 macro_rules! impl_as_primitive {
     ($($src:ty),+ => $dst:ty ) => {
-        $(impl AsPrimitive<$dst> for $src {
+        $(
+            impl AsPrimitive<$dst> for $src {
                 fn as_(self) -> $dst { self as $dst }
-        })+
+            }
+        )+
     };
 }
 

@@ -1,33 +1,37 @@
 use std::iter::zip;
 
-use self::alphabet::{Alphabet, ByteAlphabet, IndexAlphabet, IndexSymbol};
-use self::buckets::{s_buckets, Buckets, LMSBuckets};
-use self::lms::LMSIter;
+use self::{alphabet::*, buckets::*, lms::*};
+use super::result::MemoryResult;
 use super::SuffixArray;
 use crate::index::{ArrayIndex, ToIndex};
-use crate::sa::sais::buckets::init_buckets;
-use crate::sa::sais::lms::lms_str_from_suffix;
 use crate::TextExt;
 
-pub(super) fn sais<Idx: ArrayIndex>(text: &[u8]) -> SuffixArray<Idx> {
-    SuffixArray(sais_impl(text, ByteAlphabet))
+pub(super) fn sais<Idx: ArrayIndex>(text: &[u8]) -> MemoryResult<SuffixArray<Idx>> {
+    let MemoryResult { value, memory } = sais_impl(text, ByteAlphabet);
+    MemoryResult { value: SuffixArray(value), memory }
 }
-
 
 fn sais_impl<A: Alphabet, Idx: ArrayIndex>(
     text: &[A::Symbol],
     alphabet: A,
-) -> Box<[Idx]> {
+) -> MemoryResult<Box<[Idx]>> {
     assert!(text.fits::<Idx>());
 
+    let mut result = MemoryResult::builder();
     if text.is_empty() {
-        return Box::new([]);
+        return result.build(Box::new([]));
     }
 
-    let mut sa = vec![Idx::ZERO; text.len()];
+    // TODO don't count the suffix array it self
+    result.add_values::<Idx>(text.len());
+    let mut sa = vec![Idx::ZERO; text.len()].into_boxed_slice();
+
+    result.add_values::<Idx>(4 * alphabet.size());
     let (mut buckets, mut lms_buckets) = init_buckets(text, &mut sa, alphabet);
 
-    let mut lms_sorted = partial_sort_lms(text, &mut sa, &mut buckets, &mut lms_buckets);
+    let mut lms_sorted =
+        partial_sort_lms(text, &mut sa, &mut buckets, &mut lms_buckets)
+            .add_to(&mut result);
 
     // Write rank of LMS-substring into the suffix array
     let mut iter = lms_sorted
@@ -58,7 +62,7 @@ fn sais_impl<A: Alphabet, Idx: ArrayIndex>(
     induce_l_suffixes(text, &mut sa, &mut buckets);
     induce_s_suffixes(text, &mut sa, &mut buckets);
 
-    sa.into_boxed_slice()
+    result.build(sa)
 }
 
 
@@ -69,13 +73,18 @@ fn partial_sort_lms<A: Alphabet, Idx: ArrayIndex>(
     sa: &mut [Idx],
     buckets: &mut Buckets<A, Idx>,
     lms_buckets: &LMSBuckets<A, Idx>,
-) -> Box<[Idx]> {
+) -> MemoryResult<Box<[Idx]>> {
+    let mut result = MemoryResult::builder();
+
     // Induce partial order among LMS-substrings
     induce_l_suffixes(text, sa, buckets);
     induce_s_suffixes(text, sa, buckets);
 
-    // Collect LMS-prefixes, sorted by LMS-substrings
     let mut lms_sorted = Vec::with_capacity(lms_buckets.count());
+    // TODO count capacity instead of len?????
+    result.add_values::<Idx>(lms_sorted.len());
+
+    // Collect LMS-prefixes, sorted by LMS-substrings
     lms_sorted.extend(
         s_buckets(buckets, lms_buckets)
             .flat_map(|(&i, &j)| &sa[i.as_()..j.as_()])
@@ -84,7 +93,7 @@ fn partial_sort_lms<A: Alphabet, Idx: ArrayIndex>(
             .copied(),
     );
 
-    lms_sorted.into_boxed_slice()
+    result.build(lms_sorted.into_boxed_slice())
 }
 
 #[inline(always)]
@@ -93,10 +102,12 @@ fn sort_lms_recursive<A: Alphabet, Idx: ArrayIndex>(
     sa: &mut [Idx],
     lms_buckets: &mut LMSBuckets<A, Idx>,
     lms_sorted: &mut [Idx],
-) {
-    // TODO case distinction alphabet_size ?= text_size
+) -> MemoryResult<()> {
+    let mut result = MemoryResult::builder();
+
     // TODO use u8, u16, u32, u64 depending on lms_count
     // TODO Move this to the alphabet trait
+
     let mut lms_text = vec![IndexSymbol(Idx::ZERO); lms_sorted.len()];
     let lms_alphabet = IndexAlphabet::new(lms_sorted.len());
 
@@ -110,15 +121,16 @@ fn sort_lms_recursive<A: Alphabet, Idx: ArrayIndex>(
     }
 
     sa.fill(Idx::ZERO);
-    let lms_sa = sais_impl::<_, Idx>(&lms_text, lms_alphabet);
+    let lms_sa = sais_impl::<_, Idx>(&lms_text, lms_alphabet).add_to(&mut result);
 
     // Put the sorted LMS-suffixes at the end of the buckets
     let mut lms_iter = lms_sa.iter();
-
     for (&i, &j) in lms_buckets.lms_buckets() {
         zip(&mut sa[i.as_()..j.as_()], lms_iter.by_ref())
             .for_each(|(dst, lms)| *dst = lms_sorted[lms.as_()]);
     }
+
+    result.build(())
 }
 
 
@@ -266,12 +278,10 @@ pub(super) mod alphabet {
 
 #[allow(dead_code)]
 mod buckets {
+    use std::iter::{zip, Zip};
+    use std::mem;
+    use std::ops::Deref;
     use std::slice;
-    use std::{
-        iter::{zip, Zip},
-        mem,
-        ops::Deref,
-    };
 
     use super::alphabet::Alphabet;
     use super::lms::LMSIter;
@@ -285,7 +295,7 @@ mod buckets {
         sa: &mut [Idx],
         alphabet: A,
     ) -> (Buckets<A, Idx>, LMSBuckets<A, Idx>) {
-        let buckets = Buckets::new(text, alphabet);
+        let buckets = Buckets::from_text(text, alphabet);
         let mut lms_buckets = buckets.clone();
 
         let lms_count = LMSIter::new(text)
@@ -340,7 +350,7 @@ mod buckets {
     }
 
     impl<A: Alphabet, Idx: ArrayIndex> Buckets<A, Idx> {
-        fn new(text: &[A::Symbol], alphabet: A) -> Self {
+        fn from_text(text: &[A::Symbol], alphabet: A) -> Self {
             let mut histogram = alphabet.buckets::<Idx>();
             for c in text {
                 histogram.as_mut()[c.as_()] += Idx::ONE;
@@ -416,7 +426,10 @@ mod lms {
 
     impl<'a, S> LMSIter<'a, S> {
         pub(super) fn new(text: &'a [S]) -> Self {
-            LMSIter { text: text.iter().enumerate().rev().peekable(), decreasing: false }
+            LMSIter {
+                text: text.iter().enumerate().rev().peekable(),
+                decreasing: false,
+            }
         }
     }
 
@@ -486,7 +499,7 @@ mod test {
         (($text:expr, $alphabet:expr), $sa:expr, $($type:ty),+ $(,)?) => {
             $(
                 assert_eq!(
-                    *$crate::suffix_array::sais::sais_impl::<_, $type>($text, $alphabet),
+                    *$crate::suffix_array::sais::sais_impl::<_, $type>($text, $alphabet).value,
                     *$crate::suffix_array::sais::test::convert($sa)
                 );
             )+
@@ -549,7 +562,7 @@ mod test {
     fn test_sais_wikipedia_with_sentinel() {
         let text = b"immissiissippi\0";
         let sa = [14, 13, 6, 0, 10, 3, 7, 2, 1, 12, 11, 5, 9, 4, 8];
-        assert_eq!(*sais_impl::<_, usize>(text, A), sa);
+        assert_eq!(*sais_impl::<_, usize>(text, A).value, sa);
         assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
     }
 
@@ -557,7 +570,7 @@ mod test {
     fn test_sais_wikipedia_no_sentinel() {
         let text = b"immissiissippi";
         let sa = [13, 6, 0, 10, 3, 7, 2, 1, 12, 11, 5, 9, 4, 8];
-        assert_eq!(*sais_impl::<_, usize>(text, A), sa);
+        assert_eq!(*sais_impl::<_, usize>(text, A).value, sa);
         assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
     }
 
@@ -565,7 +578,7 @@ mod test {
     fn test_sais_slides_with_sentinel() {
         let text = b"ababcabcabba\0";
         let sa = [12, 11, 0, 8, 5, 2, 10, 1, 9, 6, 3, 7, 4];
-        assert_eq!(*sais_impl::<_, usize>(text, A), sa);
+        assert_eq!(*sais_impl::<_, usize>(text, A).value, sa);
         assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
     }
 
@@ -573,7 +586,7 @@ mod test {
     fn test_sais_slides_no_sentinel() {
         let text = b"ababcabcabba";
         let sa = [11, 0, 8, 5, 2, 10, 1, 9, 6, 3, 7, 4];
-        assert_eq!(*sais_impl::<_, usize>(text, A), sa);
+        assert_eq!(*sais_impl::<_, usize>(text, A).value, sa);
         assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
     }
 
@@ -581,7 +594,7 @@ mod test {
     fn test_sais_all_a_with_sentinel() {
         let text = b"aaaaaaaa\0";
         let sa = [8, 7, 6, 5, 4, 3, 2, 1, 0];
-        assert_eq!(*sais_impl::<_, usize>(text, A), sa);
+        assert_eq!(*sais_impl::<_, usize>(text, A).value, sa);
         assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
     }
 
@@ -589,7 +602,7 @@ mod test {
     fn test_sais_all_a_no_sentinel() {
         let text = b"aaaaaaaa";
         let sa = [7, 6, 5, 4, 3, 2, 1, 0];
-        assert_eq!(*sais_impl::<_, usize>(text, A), sa);
+        assert_eq!(*sais_impl::<_, usize>(text, A).value, sa);
         assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
     }
 
@@ -597,7 +610,7 @@ mod test {
     fn test_sais_null_character() {
         let text = b"aba\0cabcabba";
         let sa = [3, 11, 2, 0, 8, 5, 10, 1, 9, 6, 7, 4];
-        assert_eq!(*sais_impl::<_, usize>(text, A), sa);
+        assert_eq!(*sais_impl::<_, usize>(text, A).value, sa);
         assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
     }
 
@@ -606,7 +619,7 @@ mod test {
         let text = b"Lorem ipsum dolor sit amet, qui minim labore adipisicing \
                    minim sint cillum sint consectetur cupidatat.";
         let sa = &*sa::naive(text).0;
-        assert_eq!(*sais_impl::<_, usize>(text, A), *sa);
+        assert_eq!(*sais_impl::<_, usize>(text, A).value, *sa);
         assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
     }
 
@@ -614,7 +627,7 @@ mod test {
     fn test_sais_lorem_ipsum_long() {
         let text = LOREM_IPSUM_LONG;
         let sa = &*sa::naive(text).0;
-        assert_eq!(*sais_impl::<_, usize>(text, A), *sa);
+        assert_eq!(*sais_impl::<_, usize>(text, A).value, *sa);
         assert_sais_eq!((text, A), &sa, u16, u32, u64,);
     }
 
@@ -623,7 +636,7 @@ mod test {
     fn test_sais_lorem_ipsum_long_panick() {
         let text = LOREM_IPSUM_LONG;
         let sa = &*sa::naive::<_, usize>(text).0;
-        assert_eq!(*sais_impl::<_, u8>(text, A), *convert(sa));
+        assert_eq!(*sais_impl::<_, u8>(text, A).value, *convert(sa));
     }
 
 
@@ -631,7 +644,7 @@ mod test {
     fn test_sais_dna() {
         let text = b"CAACAACAAAT";
         let sa = &*sa::naive(text).0;
-        assert_eq!(*sais_impl::<_, usize>(text, A), *sa);
+        assert_eq!(*sais_impl::<_, usize>(text, A).value, *sa);
         assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
     }
 
@@ -639,7 +652,7 @@ mod test {
     fn test_sais_dna_2() {
         let text = b"TGTGGGACTGTGGAG";
         let sa = &*sa::naive(text).0;
-        assert_eq!(*sais_impl::<_, usize>(text, A), *sa);
+        assert_eq!(*sais_impl::<_, usize>(text, A).value, *sa);
         assert_sais_eq!((text, A), &sa, u8, u16, u32, u64,);
     }
 }

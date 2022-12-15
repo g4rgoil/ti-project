@@ -3,8 +3,26 @@ mod sais;
 use std::fmt::Debug;
 use std::{iter::zip, ops::Deref};
 
+use self::result::MemoryResult;
 use crate::index::ArrayIndex;
 use crate::TextExt;
+
+#[allow(unused)]
+pub fn naive<T: Ord + Debug, Idx: ArrayIndex>(text: &[T]) -> SuffixArray<Idx> {
+    // TODO This should return a result instead
+    assert!(text.fits::<Idx>());
+
+    let mut sa: Box<_> = (0..text.len()).map(Idx::from_usize).collect();
+    sa.sort_by_key(|i| text.suffix(i.as_()));
+
+    SuffixArray(sa)
+}
+
+pub fn sais<Idx: ArrayIndex>(text: &[u8]) -> MemoryResult<SuffixArray<Idx>> {
+    let sa = sais::sais(text);
+    // sa.value.verify(text);
+    sa
+}
 
 /// TODO: Invariants:
 /// - sa is permutation of (0, sa.len())
@@ -56,19 +74,39 @@ impl<Idx: ArrayIndex> Deref for InverseSuffixArray<Idx> {
     fn deref(&self) -> &Self::Target { &self.0 }
 }
 
-#[allow(unused)]
-pub fn naive<T: Ord + Debug, Idx: ArrayIndex>(text: &[T]) -> SuffixArray<Idx> {
-    // TODO This should return a result instead
-    assert!(text.fits::<Idx>());
+pub mod result {
+    use std::marker::PhantomData;
 
-    let mut sa: Box<_> = (0..text.len()).map(Idx::from_usize).collect();
-    sa.sort_by_key(|i| text.suffix(i.as_()));
+    #[derive(Debug, Clone, Copy)]
+    pub struct MemoryResult<T> {
+        pub value: T,
+        pub memory: usize,
+    }
 
-    SuffixArray(sa)
-}
+    impl<T> MemoryResult<T> {
+        pub fn builder() -> Builder<T> {
+            Builder { memory: 0, _phantom: Default::default() }
+        }
 
-pub fn sais<Idx: ArrayIndex>(text: &[u8]) -> SuffixArray<Idx> {
-    let sa = sais::sais(text);
-    // sa.verify(text);
-    sa
+        pub fn add_to<S>(self, builder: &mut Builder<S>) -> T {
+            builder.memory += self.memory;
+            self.value
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct Builder<T> {
+        memory: usize,
+        _phantom: PhantomData<T>,
+    }
+
+    impl<T> Builder<T> {
+        pub fn build(self, value: T) -> MemoryResult<T> {
+            MemoryResult { value, memory: self.memory }
+        }
+
+        pub fn add_values<S>(&mut self, num: usize) {
+            self.memory += num * std::mem::size_of::<S>();
+        }
+    }
 }

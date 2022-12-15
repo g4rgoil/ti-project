@@ -17,6 +17,8 @@ use index::ArrayIndex;
 use lcp_array as lcp;
 use suffix_array as sa;
 
+use crate::suffix_array::result::MemoryResult;
+
 fn main() -> Result<TestResults, String> {
     // TODO Error enum
     // TODO use u32 instead of usize if possible
@@ -29,12 +31,14 @@ fn main() -> Result<TestResults, String> {
         (result, elapsed)
     }
 
-    let input_path =
-        env::args().nth(1).ok_or_else(|| "expected exactly 1 argument".to_owned())?;
+    let input_path = env::args()
+        .nth(1)
+        .ok_or_else(|| "expected exactly 1 argument".to_owned())?;
     let input_file = fs::read(input_path).map_err(|e| e.to_string())?;
 
     println!("SA (SAIS)");
-    let (sa, sa_time) = run_timed(|| sa::sais(&input_file));
+    let (MemoryResult { value: sa, memory: sa_memory }, sa_time) =
+        run_timed(|| sa::sais(&input_file));
     // TODO sa memory
 
     println!("LCP (naive)");
@@ -53,7 +57,7 @@ fn main() -> Result<TestResults, String> {
 
     Ok(TestResults {
         sa_time,
-        sa_memory: Default::default(),
+        sa_memory,
         lcp_naive_time,
         lcp_kasai_time,
         lcp_phi_time,
@@ -63,7 +67,7 @@ fn main() -> Result<TestResults, String> {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TestResults {
     sa_time: Duration,
-    sa_memory: u64,
+    sa_memory: usize,
     lcp_naive_time: Duration,
     lcp_kasai_time: Duration,
     lcp_phi_time: Duration,
@@ -82,7 +86,7 @@ impl process::Termination for TestResults {
             lcp_kasai_construction_time={} \
             lcp_phi_construction_time={}",
             self.sa_time.as_millis(),
-            self.sa_memory,
+            self.sa_memory / (1024 * 1024),
             self.lcp_naive_time.as_millis(),
             self.lcp_kasai_time.as_millis(),
             self.lcp_phi_time.as_millis()
