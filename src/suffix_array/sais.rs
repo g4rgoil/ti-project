@@ -81,7 +81,6 @@ fn partial_sort_lms<A: Alphabet, Idx: ArrayIndex>(
     induce_s_suffixes(text, sa, buckets);
 
     let mut lms_sorted = Vec::with_capacity(lms_buckets.count());
-    // TODO count capacity instead of len?????
     result.add_values::<Idx>(lms_sorted.len());
 
     // Collect LMS-prefixes, sorted by LMS-substrings
@@ -185,7 +184,8 @@ fn induce_s_suffixes<A: Alphabet, Idx: ArrayIndex>(
 
 // TODO maybe move this up to suffix_array
 pub(super) mod alphabet {
-    use std::{fmt::Debug, marker::PhantomData};
+    use std::fmt::Debug;
+    use std::marker::PhantomData;
 
     use crate::index::{ArrayIndex, AsPrimitive};
 
@@ -413,8 +413,8 @@ mod buckets {
 }
 
 mod lms {
-    use core::slice;
     use std::iter::{Enumerate, Peekable, Rev};
+    use std::slice;
 
     use super::alphabet::Symbol;
 

@@ -4,7 +4,7 @@ use std::fmt::Debug;
 use std::{iter::zip, ops::Deref};
 
 use self::result::MemoryResult;
-use crate::index::ArrayIndex;
+use crate::index::{ArrayIndex, ToIndex};
 use crate::TextExt;
 
 #[allow(unused)]
@@ -37,15 +37,15 @@ impl<Idx: ArrayIndex> Deref for SuffixArray<Idx> {
 
 impl<Idx: ArrayIndex> SuffixArray<Idx> {
     #[inline(never)]
-    pub fn inverse(&self) -> InverseSuffixArray {
+    pub fn inverse(&self) -> InverseSuffixArray<Idx> {
         // TODO use MaybeUninit for optimization
 
-        let mut isa = vec![0; self.len()];
+        let mut isa = vec![Idx::ZERO; self.len()];
 
         for (i, sa_i) in self.iter().enumerate() {
             // SAFETY: Because a SuffixArray is a permutation of (0, len),
             // sa_i is guaranteed to not be out of bounds for isa
-            unsafe { *isa.get_unchecked_mut(sa_i.as_()) = i };
+            unsafe { *isa.get_unchecked_mut(sa_i.as_()) = i.to_index() };
         }
 
         InverseSuffixArray(isa.into_boxed_slice())
