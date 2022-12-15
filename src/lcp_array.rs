@@ -31,7 +31,7 @@ pub fn naive<T: Ord, Idx: ArrayIndex>(
         let suffix_j = text.suffix(j.as_());
 
         // TODO maybe push isn't the best thing here
-        lcp.push(common_prefix(suffix_i, suffix_j).to_index())
+        lcp.push(common_prefix(suffix_i, suffix_j).to_index());
     }
 
     LCPArray(lcp.into_boxed_slice())

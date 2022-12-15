@@ -1,6 +1,3 @@
-// TODO get rid of unstable features
-#![feature(array_windows)]
-
 // TODO use stricter clippy options
 
 mod index;
@@ -20,15 +17,34 @@ use suffix_array as sa;
 use crate::suffix_array::result::MemoryResult;
 
 fn main() -> Result<TestResults, String> {
-    // TODO Error enum
-    // TODO use u32 instead of usize if possible
-
     fn run_timed<T>(f: impl FnOnce() -> T) -> (T, Duration) {
-        // TODO is this atually correct?
         let before = Instant::now();
         let result = f();
         let elapsed = before.elapsed();
         (result, elapsed)
+    }
+
+    fn run<Idx: ArrayIndex>(input: &[u8]) -> TestResults {
+        let (result, sa_time) = run_timed(|| sa::sais::<Idx>(input));
+        let MemoryResult { value: sa, memory: sa_memory } = result;
+
+        let (lcp_naive, lcp_naive_time) = run_timed(|| lcp::naive(input, &sa));
+        let (lcp_kasai, lcp_kasai_time) = run_timed(|| {
+            let isa = sa.inverse();
+            lcp::kasai(input, &sa, &isa)
+        });
+        let (lcp_phi, lcp_phi_time) = run_timed(|| lcp::phi(input, &sa));
+
+        assert_eq!(*lcp_naive, *lcp_kasai);
+        assert_eq!(*lcp_kasai, *lcp_phi);
+
+        TestResults {
+            sa_time,
+            sa_memory,
+            lcp_naive_time,
+            lcp_kasai_time,
+            lcp_phi_time,
+        }
     }
 
     let input_path = env::args()
@@ -36,32 +52,17 @@ fn main() -> Result<TestResults, String> {
         .ok_or_else(|| "expected exactly 1 argument".to_owned())?;
     let input_file = fs::read(input_path).map_err(|e| e.to_string())?;
 
-    println!("SA (SAIS)");
-    let (MemoryResult { value: sa, memory: sa_memory }, sa_time) =
-        run_timed(|| sa::sais(&input_file));
-    // TODO sa memory
-
-    println!("LCP (naive)");
-    let (lcp_naive, lcp_naive_time) = run_timed(|| lcp::naive(&input_file, &sa));
-    println!("LCP (kasai)");
-    let (lcp_kasai, lcp_kasai_time) = run_timed(|| {
-        let isa = sa.inverse();
-        lcp::kasai(&input_file, &sa, &isa)
-    });
-    println!("LCP (phi)");
-    let (lcp_phi, lcp_phi_time) = run_timed(|| lcp::phi(&input_file, &sa));
-
-    println!("Assert EQ");
-    assert_eq!(*lcp_naive, *lcp_kasai);
-    assert_eq!(*lcp_kasai, *lcp_phi);
-
-    Ok(TestResults {
-        sa_time,
-        sa_memory,
-        lcp_naive_time,
-        lcp_kasai_time,
-        lcp_phi_time,
-    })
+    // todo add cfg[target_width ] options
+    if input_file.fits::<u16>() {
+        // TODO this is pretty much useless
+        Ok(run::<u16>(&input_file))
+    } else if input_file.fits::<u32>() {
+        Ok(run::<u32>(&input_file))
+    } else if input_file.fits::<u64>() {
+        Ok(run::<u64>(&input_file))
+    } else {
+        Ok(run::<usize>(&input_file))
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]

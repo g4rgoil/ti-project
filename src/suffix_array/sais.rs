@@ -29,9 +29,8 @@ fn sais_impl<A: Alphabet, Idx: ArrayIndex>(
     result.add_values::<Idx>(4 * alphabet.size());
     let (mut buckets, mut lms_buckets) = init_buckets(text, &mut sa, alphabet);
 
-    let mut lms_sorted =
-        partial_sort_lms(text, &mut sa, &mut buckets, &mut lms_buckets)
-            .add_to(&mut result);
+    let mut lms_sorted = partial_sort_lms(text, &mut sa, &mut buckets, &lms_buckets)
+        .add_to(&mut result);
 
     // Write rank of LMS-substring into the suffix array
     let mut iter = lms_sorted
@@ -96,11 +95,11 @@ fn partial_sort_lms<A: Alphabet, Idx: ArrayIndex>(
 }
 
 #[inline(always)]
-fn sort_lms_recursive<A: Alphabet, Idx: ArrayIndex>(
+fn sort_lms_recursive<A: Alphabet, Idx: ArrayIndex, Idx2: ArrayIndex>(
     text: &[A::Symbol],
     sa: &mut [Idx],
     lms_buckets: &mut LMSBuckets<A, Idx>,
-    lms_sorted: &mut [Idx],
+    lms_sorted: &mut [Idx2],
 ) -> MemoryResult<()> {
     let mut result = MemoryResult::builder();
 
@@ -110,8 +109,6 @@ fn sort_lms_recursive<A: Alphabet, Idx: ArrayIndex>(
     let mut lms_text = vec![IndexSymbol(Idx::ZERO); lms_sorted.len()];
     let lms_alphabet = IndexAlphabet::new(lms_sorted.len());
 
-    // TODO benchmark what is better here (don't forget sa.fill(MAX))
-    // .zip(sa.iter().enumerate().rev().filter(|(_, x)| **x != usize::MAX))
     for ((dst_symbol, dst_index), i) in (lms_text.iter_mut().rev())
         .zip(lms_sorted.iter_mut().rev())
         .zip(LMSIter::new(text))
@@ -126,7 +123,8 @@ fn sort_lms_recursive<A: Alphabet, Idx: ArrayIndex>(
     let mut lms_iter = lms_sa.iter();
     for (&i, &j) in lms_buckets.lms_buckets() {
         zip(&mut sa[i.as_()..j.as_()], lms_iter.by_ref())
-            .for_each(|(dst, lms)| *dst = lms_sorted[lms.as_()]);
+            // TODO this conversion is dodgy af
+            .for_each(|(dst, lms)| *dst = lms_sorted[lms.as_()].as_().to_index());
     }
 
     result.build(())
@@ -425,7 +423,7 @@ mod lms {
     }
 
     impl<'a, S> LMSIter<'a, S> {
-        pub(super) fn new(text: &'a [S]) -> Self {
+        pub fn new(text: &'a [S]) -> Self {
             LMSIter {
                 text: text.iter().enumerate().rev().peekable(),
                 decreasing: false,
