@@ -34,7 +34,11 @@ pub fn main() -> Result<TestResults, String> {
 
         let (_lcp_naive, lcp_naive_time) = run_timed(|| lcp::naive(&sa));
         let (_lcp_kasai, lcp_kasai_time) = run_timed(|| lcp::kasai(&sa.inverse()));
-        let (_lcp_phi, lcp_phi_time) = run_timed(|| lcp::phi(&sa));
+        let (_lcp_phi, mut lcp_phi_time) = run_timed(|| lcp::phi(&sa));
+
+        for _ in 0..10 {
+            lcp_phi_time = lcp_phi_time.min(run_timed(|| lcp::phi(&sa)).1);
+        }
 
         #[cfg(feature = "verify")]
         {

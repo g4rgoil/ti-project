@@ -1,7 +1,9 @@
 use std::fmt::Debug;
 use std::ops::{Add, AddAssign, Sub, SubAssign};
 
+
 // TODO where std::ops::Range: DoubleEndedIterator to emulate Step?!
+/// A trait for types that can be used to index texts.
 pub trait ArrayIndex:
     Sized
     + Copy
@@ -62,7 +64,9 @@ impl ArrayIndex for u64 {
     fn from_usize(value: usize) -> Self { value as u64 }
 }
 
+/// An extensions trait to convert `usize`s to [`ArrayIndex`]s.
 pub trait ToIndex<Idx: ArrayIndex> {
+    /// Convert `self` to a value of type `Idx` using a primitive cast.
     fn to_index(self) -> Idx;
 }
 
@@ -70,7 +74,11 @@ impl<Idx: ArrayIndex> ToIndex<Idx> for usize {
     fn to_index(self) -> Idx { Idx::from_usize(self) }
 }
 
+/// A trait for conversions between primitive integers. Pretty much a straight
+/// copy of the equally named trait in the `num_traits` crate.
 pub trait AsPrimitive<T>: 'static + Copy {
+    /// Coverts `self` to a value of type `T` using a primitve cast. This
+    /// functions is explicitly allowed to lose information.
     fn as_(self) -> T;
 }
 
@@ -84,4 +92,8 @@ macro_rules! impl_as_primitive {
     };
 }
 
+impl_as_primitive!(u8, u16, u32, u64, usize => u8);
+impl_as_primitive!(u8, u16, u32, u64, usize => u16);
+impl_as_primitive!(u8, u16, u32, u64, usize => u32);
+impl_as_primitive!(u8, u16, u32, u64, usize => u64);
 impl_as_primitive!(u8, u16, u32, u64, usize => usize);

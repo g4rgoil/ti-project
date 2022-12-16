@@ -299,6 +299,7 @@ mod buckets {
         let buckets = Buckets::from_text(text, alphabet);
         let mut lms_buckets = buckets.clone();
 
+        // TODO this does not belong here
         let lms_count = LMSIter::new(text)
             .inspect(|&lms| {
                 let idx: Idx = lms_buckets.get_mut(text[lms]).take_last();
@@ -328,7 +329,6 @@ mod buckets {
 
         #[inline(always)]
         pub(super) fn lms_buckets(&self) -> Iter<Idx> {
-            // NOTE disgregarding the last bucket here
             zip(self.buckets.end.as_ref(), &self.buckets.begin.as_ref()[1..])
         }
 

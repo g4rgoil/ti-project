@@ -21,10 +21,18 @@ pub fn sais<Idx: ArrayIndex>(text: &Text<u8>) -> MemoryResult<SuffixArray<u8, Id
     sais::sais(text)
 }
 
-/// TODO: Invariants:
-/// - sa is permutation of (0, sa.len())
-/// TODO add reference to text
-/// TODO remove Array Index bound
+/// Represents an owned suffix array for a text. Additionally stores a reference
+/// to the original text.
+///
+/// # Invariants
+///
+/// This type guarantees the following invariants for the suffix array.
+///
+/// - The suffix array has the same length as the original text.
+/// - The suffix array is a permutation of `[0..len)`, where `len` is the length
+///   of the original text.
+/// - The suffix array sorts the suffixes of the original text in ascending
+///   lexicographic order.
 #[derive(Debug, Clone)]
 pub struct SuffixArray<'txt, T, Idx> {
     text: &'txt Text<T>,
@@ -32,11 +40,16 @@ pub struct SuffixArray<'txt, T, Idx> {
 }
 
 impl<'txt, T, Idx: ArrayIndex> SuffixArray<'txt, T, Idx> {
+    /// Returns a reference to the original text.
     pub fn text(&self) -> &'txt Text<T> { self.text }
 
+    /// Returns a reference to the suffix array.
     pub fn inner(&self) -> &[Idx] { &self.sa }
 
-    #[inline(never)]
+    /// Returns the suffix array as a boxed slice.
+    pub fn into_inner(self) -> Box<[Idx]> { self.sa }
+
+    /// Returns the inverse of the suffix array.
     pub fn inverse(&self) -> InverseSuffixArray<'txt, '_, T, Idx> {
         // TODO use MaybeUninit for optimization
 
@@ -70,8 +83,16 @@ impl<'txt, T, Idx: ArrayIndex> SuffixArray<'txt, T, Idx> {
     }
 }
 
-/// TODO: Invariants:
-/// - sa is permutation of (0, sa.len())
+/// Represents an inverse suffix array for a text. Additionally stores a
+/// reference to a suffix array of the original text.
+///
+/// # Invariants.
+///
+/// This type guarantees the following invariants for the inverse suffix array.
+///
+/// - The inverse suffix array has the same length as the original text.
+/// - The inverse suffix array is a permutation of `[0..len)`, where `len` is
+///   the length of the original text.
 #[derive(Debug, Clone)]
 pub struct InverseSuffixArray<'sa, 'txt, T, Idx> {
     sa: &'sa SuffixArray<'txt, T, Idx>,
@@ -79,9 +100,14 @@ pub struct InverseSuffixArray<'sa, 'txt, T, Idx> {
 }
 
 impl<'sa, 'txt, T, Idx: ArrayIndex> InverseSuffixArray<'sa, 'txt, T, Idx> {
+    /// Returns a reference to the suffix array of the original text.
     pub fn sa(&self) -> &'sa SuffixArray<'txt, T, Idx> { self.sa }
 
+    /// Returns a reference to the inverse suffix array.
     pub fn inner(&self) -> &[Idx] { &self.isa }
+
+    /// Returns the inverse suffix array as a boxed slice.
+    pub fn into_inner(self) -> Box<[Idx]> { self.isa }
 }
 
 pub mod result {
