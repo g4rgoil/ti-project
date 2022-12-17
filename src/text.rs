@@ -1,4 +1,4 @@
-use std::{borrow, ops, slice};
+use std::{borrow::Borrow, fmt, ops, slice};
 
 use crate::index::ArrayIndex;
 
@@ -6,7 +6,7 @@ use crate::index::ArrayIndex;
 ///
 /// Wraps around a slice to provided the necessary operations for the
 /// convenient construction of suffix and LCP arrays.
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct Text<T>(pub [T]);
 
@@ -89,10 +89,6 @@ impl<T> Text<T> {
     }
 }
 
-impl<T> Default for &Text<T> {
-    fn default() -> Self { Text::from_slice(&[]) }
-}
-
 impl<'a, T> From<&'a [T]> for &'a Text<T> {
     fn from(value: &'a [T]) -> Self { Text::from_slice(value) }
 }
@@ -109,7 +105,7 @@ impl<T> AsRef<[T]> for Text<T> {
     fn as_ref(&self) -> &[T] { self.into() }
 }
 
-impl<T> borrow::Borrow<[T]> for Text<T> {
+impl<T> Borrow<[T]> for Text<T> {
     fn borrow(&self) -> &[T] { self.into() }
 }
 
@@ -126,7 +122,16 @@ impl<I: TextIndex<T>, T> ops::Index<I> for Text<T> {
     fn index(&self, index: I) -> &Self::Output { index.index(self) }
 }
 
-/// A helper trait used to index texts (cf. [`std::slice::SliceIndex`]).
+impl<T: fmt::Debug> fmt::Debug for Text<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Text ")?;
+        f.debug_list().entries(self.0.iter()).finish()
+    }
+}
+
+/// A helper trait used to index texts (cf. [`SliceIndex`]).
+///
+/// [`SliceIndex`]: std::slice::SliceIndex
 pub trait TextIndex<T> {
     /// The output type returned by [`TextIndex::index`].
     type Output: ?Sized;

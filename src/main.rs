@@ -34,11 +34,12 @@ pub fn main() -> Result<TestResults, String> {
 
         let (_lcp_naive, lcp_naive_time) = run_timed(|| lcp::naive(&sa));
         let (_lcp_kasai, lcp_kasai_time) = run_timed(|| lcp::kasai(&sa.inverse()));
-        let (_lcp_phi, mut lcp_phi_time) = run_timed(|| lcp::phi(&sa));
+        let (_lcp_phi, lcp_phi_time) = run_timed(|| lcp::phi(&sa));
 
-        for _ in 0..10 {
-            lcp_phi_time = lcp_phi_time.min(run_timed(|| lcp::phi(&sa)).1);
-        }
+        let lcp_phi_time = (0..10)
+            .map(|_| lcp_phi_time.min(run_timed(|| lcp::phi(&sa)).1))
+            .min()
+            .unwrap();
 
         #[cfg(feature = "verify")]
         {
@@ -46,8 +47,6 @@ pub fn main() -> Result<TestResults, String> {
             _lcp_kasai.verify();
             _lcp_phi.verify();
         }
-        // assert_eq!(lcp_naive.inner(), lcp_kasai.inner());
-        // assert_eq!(lcp_kasai.inner(), lcp_phi.inner());
 
         TestResults { sa_time, sa_memory, lcp_naive_time, lcp_kasai_time, lcp_phi_time }
     }
@@ -85,12 +84,13 @@ impl process::Termination for TestResults {
 
         let _ = writeln!(
             io::stderr(),
-            "RESULT name=Pascal\tMehnert \
+            "RESULT name={} \
             sa_construction_time={} \
             sa_construction_memory={} \
             lcp_naive_construction_time={} \
             lcp_kasai_construction_time={} \
             lcp_phi_construction_time={}",
+            "Pascal\tMehnert",
             self.sa_time.as_millis(),
             self.sa_memory / (1024 * 1024),
             self.lcp_naive_time.as_millis(),

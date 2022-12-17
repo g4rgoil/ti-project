@@ -1,6 +1,9 @@
 [package]
-name = "ti_programm"
+name = "ti-project"
 version = "0.1.0"
 edition = "2021"
+
+[features]
+verify = []
 
 [dependencies]

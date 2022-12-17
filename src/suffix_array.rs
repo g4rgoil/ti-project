@@ -1,22 +1,31 @@
 mod sais;
 
-use std::fmt::Debug;
+use std::fmt::{self, Debug};
 use std::iter::zip;
 
 use self::result::MemoryResult;
 use crate::index::{ArrayIndex, ToIndex};
 use crate::text::Text;
 
-#[allow(unused)]
+/// Computes the suffix array for `text` using the naive algorithm.
+///
+/// The implementation uses [`sort_by_key`] from the standard library.
+/// Comparing two suffixes takes _O(n)_ time, therefore the worst case
+/// performance of the algorithm is _O(n² * log(n))_.
+///
+/// [`sort_by_key`]: slice::sort_by_key
 pub fn naive<T: Ord + Debug, Idx: ArrayIndex>(text: &Text<T>) -> SuffixArray<T, Idx> {
     assert!(text.fits_index::<Idx>());
 
     let mut sa: Box<_> = (0..text.len()).map(Idx::from_usize).collect();
-    sa.sort_by_key(|i| &text[*i..]);
+    sa.sort_unstable_by_key(|i| &text[*i..]);
 
     SuffixArray { text, sa }
 }
 
+/// Computes the suffix array for `text` using Suffix-Array-Induced-Sorting (SAIS).
+///
+/// TODO
 pub fn sais<Idx: ArrayIndex>(text: &Text<u8>) -> MemoryResult<SuffixArray<u8, Idx>> {
     sais::sais(text)
 }
@@ -33,13 +42,12 @@ pub fn sais<Idx: ArrayIndex>(text: &Text<u8>) -> MemoryResult<SuffixArray<u8, Id
 ///   of the original text.
 /// - The suffix array sorts the suffixes of the original text in ascending
 ///   lexicographic order.
-#[derive(Debug, Clone)]
 pub struct SuffixArray<'txt, T, Idx> {
     text: &'txt Text<T>,
     sa: Box<[Idx]>,
 }
 
-impl<'txt, T, Idx: ArrayIndex> SuffixArray<'txt, T, Idx> {
+impl<'txt, T, Idx> SuffixArray<'txt, T, Idx> {
     /// Returns a reference to the original text.
     pub fn text(&self) -> &'txt Text<T> { self.text }
 
@@ -50,7 +58,10 @@ impl<'txt, T, Idx: ArrayIndex> SuffixArray<'txt, T, Idx> {
     pub fn into_inner(self) -> Box<[Idx]> { self.sa }
 
     /// Returns the inverse of the suffix array.
-    pub fn inverse(&self) -> InverseSuffixArray<'txt, '_, T, Idx> {
+    pub fn inverse(&self) -> InverseSuffixArray<'txt, '_, T, Idx>
+    where
+        Idx: ArrayIndex,
+    {
         // TODO use MaybeUninit for optimization
 
         let mut isa = vec![Idx::ZERO; self.sa.len()];
@@ -64,15 +75,19 @@ impl<'txt, T, Idx: ArrayIndex> SuffixArray<'txt, T, Idx> {
         InverseSuffixArray { sa: self, isa: isa.into_boxed_slice() }
     }
 
-    #[allow(unused)]
+    /// Ensures that the suffix array upholds the required invariants, and
+    /// panics if it does not.
+    ///
+    /// Note: This is a **very expensive** operation, with _O(n²)_ worst case
+    /// performance.
     pub fn verify(&self, text: &Text<T>)
     where
+        Idx: ArrayIndex,
         T: Ord + Debug,
     {
         let is_increasing = zip(self.sa.iter(), self.sa.iter().skip(1))
             .all(|(i, j)| text[*i..] < text[*j..]);
         assert!(is_increasing, "the suffix array is not sorted in increasing order");
-
 
         let mut arr = vec![false; text.len()];
         self.sa.iter().for_each(|i| arr[i.as_()] = true);
@@ -80,6 +95,19 @@ impl<'txt, T, Idx: ArrayIndex> SuffixArray<'txt, T, Idx> {
             arr.iter().all(|b| *b),
             "the suffix array is not a permutation of [0..len)"
         );
+    }
+}
+
+impl<'txt, T, Idx: Clone> Clone for SuffixArray<'txt, T, Idx> {
+    fn clone(&self) -> Self { Self { text: self.text(), sa: self.sa.clone() } }
+}
+
+impl<'txt, T: fmt::Debug, Idx: fmt::Debug> fmt::Debug for SuffixArray<'txt, T, Idx> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SuffixArray")
+            .field("text", &self.text())
+            .field("sa", &self.inner())
+            .finish()
     }
 }
 
@@ -93,13 +121,12 @@ impl<'txt, T, Idx: ArrayIndex> SuffixArray<'txt, T, Idx> {
 /// - The inverse suffix array has the same length as the original text.
 /// - The inverse suffix array is a permutation of `[0..len)`, where `len` is
 ///   the length of the original text.
-#[derive(Debug, Clone)]
 pub struct InverseSuffixArray<'sa, 'txt, T, Idx> {
     sa: &'sa SuffixArray<'txt, T, Idx>,
     isa: Box<[Idx]>,
 }
 
-impl<'sa, 'txt, T, Idx: ArrayIndex> InverseSuffixArray<'sa, 'txt, T, Idx> {
+impl<'sa, 'txt, T, Idx> InverseSuffixArray<'sa, 'txt, T, Idx> {
     /// Returns a reference to the suffix array of the original text.
     pub fn sa(&self) -> &'sa SuffixArray<'txt, T, Idx> { self.sa }
 
@@ -110,9 +137,23 @@ impl<'sa, 'txt, T, Idx: ArrayIndex> InverseSuffixArray<'sa, 'txt, T, Idx> {
     pub fn into_inner(self) -> Box<[Idx]> { self.isa }
 }
 
-pub mod result {
-    use std::marker::PhantomData;
+impl<'sa, 'txt, T, Idx: Clone> Clone for InverseSuffixArray<'sa, 'txt, T, Idx> {
+    fn clone(&self) -> Self { Self { sa: self.sa(), isa: self.isa.clone() } }
+}
 
+impl<'sa, 'txt, T: fmt::Debug, Idx: fmt::Debug> fmt::Debug
+    for InverseSuffixArray<'sa, 'txt, T, Idx>
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InverseSuffixArray")
+            .field("text", &self.sa().text())
+            .field("sa", &self.sa().inner())
+            .field("isa", &self.inner())
+            .finish()
+    }
+}
+
+pub mod result {
     #[derive(Debug, Clone, Copy)]
     #[must_use]
     pub struct MemoryResult<T> {
@@ -134,7 +175,7 @@ pub mod result {
     #[derive(Debug, Clone, Copy)]
     pub struct Builder<T> {
         pub memory: usize,
-        _phantom: PhantomData<T>,
+        _phantom: std::marker::PhantomData<T>,
     }
 
     impl<T> Builder<T> {
