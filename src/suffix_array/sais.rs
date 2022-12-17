@@ -1,5 +1,6 @@
 use std::iter::zip;
 
+use self::buckets::kind::{Begin, End};
 use self::{alphabet::*, buckets::*, lms::*};
 use super::result::MemoryResult;
 use super::SuffixArray;
@@ -30,11 +31,45 @@ fn sais_impl<A: Alphabet, Idx: ArrayIndex>(
     result.add_values::<Idx>(text.len());
     let mut sa = vec![Idx::ZERO; text.len()].into_boxed_slice();
 
+    // TODO this is still kinda bad
     result.add_values::<Idx>(4 * alphabet.size());
-    let (mut buckets, mut lms_buckets) = init_buckets(text, &mut sa, alphabet);
+    let ref histogram = histogram(text, alphabet);
+    let ref mut begin = Buckets::new(histogram, alphabet, Begin);
+    let ref mut end = Buckets::new(histogram, alphabet, End);
+    let (ref mut lms_begin, ref mut lms_end) = (begin.clone(), end.clone());
+
+    sort_lms_suffixes(text, &mut sa, (begin, end), (lms_begin, lms_end))
+        .add_to(&mut result);
+
+    let (last, head) = lms_end.as_mut().split_last_mut().unwrap();
+    head.clone_from_slice(&lms_begin.as_ref()[1..]);
+    *last = text.len().to_index();
+
+    induce_l_suffixes(text, &mut sa, lms_begin);
+    induce_s_suffixes(text, &mut sa, lms_end);
+
+    result.build(sa)
+}
+
+#[inline(always)]
+fn sort_lms_suffixes<A: Alphabet, Idx: ArrayIndex>(
+    text: &Text<A::Symbol>,
+    sa: &mut [Idx],
+    (begin, end): (&mut Buckets<A, Idx, Begin>, &mut Buckets<A, Idx, End>),
+    (lms_begin, lms_end): (&mut Buckets<A, Idx, Begin>, &mut Buckets<A, Idx, End>),
+) -> MemoryResult<()> {
+    let mut result = MemoryResult::builder();
+
+    let lms_count = LMSIter::new(text)
+        .inspect(|&lms| {
+            let idx: Idx = lms_end.get_mut(text[lms]).take_last();
+            sa[idx.as_()] = lms.to_index();
+        })
+        .count();
 
     let mut lms_sorted =
-        partial_sort_lms(text, &mut sa, &mut buckets, &lms_buckets).add_to(&mut result);
+        partial_sort_lms(text, sa, (begin, end), (lms_begin, lms_end), lms_count)
+            .add_to(&mut result);
 
     // Write rank of LMS-substring into the suffix array
     let mut iter =
@@ -51,20 +86,16 @@ fn sais_impl<A: Alphabet, Idx: ArrayIndex>(
     if rank.as_() == lms_sorted.len() {
         sa.fill(Idx::ZERO);
         let mut lms_iter = lms_sorted.iter();
-        for (&i, &j) in lms_buckets.lms_buckets() {
+        for (&i, &j) in zip(lms_end.iter(), lms_begin.iter().skip(1)) {
             zip(&mut sa[i.as_()..j.as_()], lms_iter.by_ref())
                 .for_each(|(dst, lms)| *dst = *lms);
         }
     } else {
-        sort_lms_recursive(text, &mut sa, &mut lms_buckets, &mut lms_sorted)
+        sort_lms_recursive(text, sa, lms_begin, lms_end, &mut lms_sorted)
             .add_to(&mut result);
     }
 
-    let mut buckets = lms_buckets.reset(text);
-    induce_l_suffixes(text, &mut sa, &mut buckets);
-    induce_s_suffixes(text, &mut sa, &mut buckets);
-
-    result.build(sa)
+    result.build(())
 }
 
 
@@ -73,21 +104,22 @@ fn sais_impl<A: Alphabet, Idx: ArrayIndex>(
 fn partial_sort_lms<A: Alphabet, Idx: ArrayIndex>(
     text: &Text<A::Symbol>,
     sa: &mut [Idx],
-    buckets: &mut Buckets<A, Idx>,
-    lms_buckets: &LMSBuckets<A, Idx>,
+    buckets: (&mut Buckets<A, Idx, Begin>, &mut Buckets<A, Idx, End>),
+    lms_buckets: (&mut Buckets<A, Idx, Begin>, &mut Buckets<A, Idx, End>),
+    lms_count: usize,
 ) -> MemoryResult<Box<[Idx]>> {
     let mut result = MemoryResult::builder();
 
     // Induce partial order among LMS-substrings
-    induce_l_suffixes(text, sa, buckets);
-    induce_s_suffixes(text, sa, buckets);
+    induce_l_suffixes(text, sa, buckets.0);
+    induce_s_suffixes(text, sa, buckets.1);
 
-    let mut lms_sorted = Vec::with_capacity(lms_buckets.count());
+    let mut lms_sorted = Vec::with_capacity(lms_count);
     result.add_values::<Idx>(lms_sorted.len());
 
     // Collect LMS-prefixes, sorted by LMS-substrings
     lms_sorted.extend(
-        s_buckets(buckets, lms_buckets)
+        zip(buckets.1.iter(), lms_buckets.0.iter().skip(1))
             .flat_map(|(&i, &j)| &sa[i.as_()..j.as_()])
             .filter(|&&i| i > Idx::ZERO && text[i - Idx::ONE] > text[i])
             .copied(),
@@ -100,13 +132,13 @@ fn partial_sort_lms<A: Alphabet, Idx: ArrayIndex>(
 fn sort_lms_recursive<A: Alphabet, Idx: ArrayIndex>(
     text: &Text<A::Symbol>,
     sa: &mut [Idx],
-    lms_buckets: &mut LMSBuckets<A, Idx>,
+    lms_begin: &mut Buckets<A, Idx, Begin>,
+    lms_end: &mut Buckets<A, Idx, End>,
     lms_sorted: &mut [Idx],
 ) -> MemoryResult<()> {
     let mut result = MemoryResult::builder();
 
     // TODO use u8, u16, u32, u64 depending on lms_count
-    // TODO Move this to the alphabet trait
 
     let mut lms_text = vec![IndexSymbol(Idx::ZERO); lms_sorted.len()];
     let lms_alphabet = IndexAlphabet::new(lms_sorted.len());
@@ -124,7 +156,7 @@ fn sort_lms_recursive<A: Alphabet, Idx: ArrayIndex>(
 
     // Put the sorted LMS-suffixes at the end of the buckets
     let mut lms_iter = lms_sa.iter();
-    for (&i, &j) in lms_buckets.lms_buckets() {
+    for (&i, &j) in zip(lms_end.iter(), lms_begin.iter().skip(1)) {
         zip(&mut sa[i.as_()..j.as_()], lms_iter.by_ref())
             .for_each(|(dst, lms)| *dst = lms_sorted[lms.as_()]);
     }
@@ -137,11 +169,11 @@ fn sort_lms_recursive<A: Alphabet, Idx: ArrayIndex>(
 fn induce_l_suffixes<A: Alphabet, Idx: ArrayIndex>(
     text: &Text<A::Symbol>,
     sa: &mut [Idx],
-    buckets: &mut Buckets<A, Idx>,
+    begin: &mut Buckets<A, Idx, Begin>,
 ) {
     // Emulate S* suffix of guardian element
     if let Some(last) = text.0.last() {
-        let idx = buckets.get_mut(*last).take_first();
+        let idx = begin.get_mut(*last).take_first();
         sa[idx.as_()] = (sa.len() - 1).to_index();
     }
 
@@ -149,11 +181,11 @@ fn induce_l_suffixes<A: Alphabet, Idx: ArrayIndex>(
         if sa[i] != Idx::ZERO {
             let text_lhs = text[sa[i] - Idx::ONE];
             let text_rhs = text[sa[i]];
-            let bucket = buckets.get(text_rhs);
+            let bucket = begin.get(text_rhs);
 
             let ord = text_lhs.cmp(&text_rhs);
-            if ord.is_gt() || (ord.is_eq() && i < bucket.begin().as_()) {
-                let idx = buckets.get_mut(text_lhs).take_first();
+            if ord.is_gt() || (ord.is_eq() && i < bucket.index().as_()) {
+                let idx = begin.get_mut(text_lhs).take_first();
                 sa[idx.as_()] = sa[i] - Idx::ONE;
             }
         }
@@ -164,17 +196,17 @@ fn induce_l_suffixes<A: Alphabet, Idx: ArrayIndex>(
 fn induce_s_suffixes<A: Alphabet, Idx: ArrayIndex>(
     text: &Text<A::Symbol>,
     sa: &mut [Idx],
-    buckets: &mut Buckets<A, Idx>,
+    end: &mut Buckets<A, Idx, End>,
 ) {
     for i in (0..sa.len()).rev() {
         if sa[i] != Idx::ZERO {
             let text_lhs = text[sa[i] - Idx::ONE];
             let text_rhs = text[sa[i]];
-            let bucket = buckets.get(text_rhs);
+            let bucket = end.get(text_rhs);
 
             let ord = text_lhs.cmp(&text_rhs);
-            if ord.is_lt() || (ord.is_eq() && i >= bucket.begin().as_()) {
-                let idx = buckets.get_mut(text_lhs).take_last();
+            if ord.is_lt() || (ord.is_eq() && i >= bucket.index().as_()) {
+                let idx = end.get_mut(text_lhs).take_last();
                 sa[idx.as_()] = sa[i] - Idx::ONE;
             }
         }
@@ -217,6 +249,7 @@ pub(super) mod alphabet {
         fn min_value() -> Self { 0 }
     }
 
+    // TODO this abstraction is bad
     #[repr(transparent)]
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     pub(super) struct IndexSymbol<Idx: ArrayIndex>(pub Idx);
@@ -229,7 +262,7 @@ pub(super) mod alphabet {
         fn min_value() -> Self { Self(ArrayIndex::ZERO) }
     }
 
-    pub(super) trait Alphabet: Clone {
+    pub(super) trait Alphabet: Copy {
         type Buckets<T: Clone>: Clone + AsRef<[T]> + AsMut<[T]>;
         type Symbol: Symbol;
 
@@ -276,139 +309,105 @@ pub(super) mod alphabet {
     }
 }
 
-#[allow(dead_code)]
 mod buckets {
-    use std::iter::{zip, Zip};
+    use std::iter::zip;
+    use std::marker::PhantomData;
     use std::mem;
     use std::ops::Deref;
     use std::slice;
 
+    use self::kind::{Begin, BucketKind, End};
     use super::alphabet::Alphabet;
-    use super::lms::LMSIter;
-    use crate::index::{ArrayIndex, AsPrimitive, ToIndex};
+    use crate::index::{ArrayIndex, AsPrimitive};
     use crate::text::Text;
 
-    pub(super) type Iter<'a, T> = Zip<slice::Iter<'a, T>, slice::Iter<'a, T>>;
-
-    #[inline(always)]
-    pub(super) fn init_buckets<A: Alphabet, Idx: ArrayIndex>(
+    pub(super) fn histogram<A: Alphabet, Idx: ArrayIndex>(
         text: &Text<A::Symbol>,
-        sa: &mut [Idx],
         alphabet: A,
-    ) -> (Buckets<A, Idx>, LMSBuckets<A, Idx>) {
-        let buckets = Buckets::from_text(text, alphabet);
-        let mut lms_buckets = buckets.clone();
-
-        // TODO this does not belong here
-        let lms_count = LMSIter::new(text)
-            .inspect(|&lms| {
-                let idx: Idx = lms_buckets.get_mut(text[lms]).take_last();
-                sa[idx.as_()] = lms.to_index();
-            })
-            .count();
-
-        (buckets, LMSBuckets { buckets: lms_buckets, count: lms_count })
-    }
-
-    #[inline(always)]
-    pub(super) fn s_buckets<'a, A: Alphabet, Idx: ArrayIndex>(
-        buckets: &'a Buckets<A, Idx>,
-        lms_buckets: &'a LMSBuckets<A, Idx>,
-    ) -> Iter<'a, Idx> {
-        zip(buckets.end.as_ref(), &lms_buckets.buckets.begin.as_ref()[1..])
-    }
-
-
-    pub(super) struct LMSBuckets<A: Alphabet, Idx: ArrayIndex> {
-        buckets: Buckets<A, Idx>,
-        count: usize,
-    }
-
-    impl<A: Alphabet, Idx: ArrayIndex> LMSBuckets<A, Idx> {
-        pub(super) fn count(&self) -> usize { self.count }
-
-        #[inline(always)]
-        pub(super) fn lms_buckets(&self) -> Iter<Idx> {
-            zip(self.buckets.end.as_ref(), &self.buckets.begin.as_ref()[1..])
+    ) -> A::Buckets<Idx> {
+        let mut histogram = alphabet.buckets::<Idx>();
+        for c in text {
+            histogram.as_mut()[c.as_()] += Idx::ONE;
         }
-
-        #[inline(always)]
-        pub(super) fn reset(mut self, text: &Text<A::Symbol>) -> Buckets<A, Idx> {
-            let (last, head) = self.buckets.end.as_mut().split_last_mut().unwrap();
-            head.clone_from_slice(&self.buckets.begin.as_ref()[1..]);
-            *last = text.len().to_index();
-
-            self.buckets
-        }
-    }
-
-
-    #[derive(Debug, Clone)]
-    pub(super) struct Buckets<A: Alphabet, Idx: ArrayIndex> {
-        alphabet: A,
-        pub begin: A::Buckets<Idx>,
-        pub end: A::Buckets<Idx>,
-    }
-
-    impl<A: Alphabet, Idx: ArrayIndex> Buckets<A, Idx> {
-        fn from_text(text: &Text<A::Symbol>, alphabet: A) -> Self {
-            let mut histogram = alphabet.buckets::<Idx>();
-            for c in text {
-                histogram.as_mut()[c.as_()] += Idx::ONE;
-            }
-
-            let mut buckets_begin = alphabet.buckets::<Idx>();
-            let sum = &mut Idx::ZERO.clone();
-            for (begin, n) in zip(buckets_begin.as_mut(), histogram.as_ref()) {
-                *begin = mem::replace(sum, *sum + *n);
-            }
-
-            // Reuse histogram for bucket ends
-            let mut buckets_end = histogram;
-            let mut sum = Idx::ZERO;
-            for end in buckets_end.as_mut() {
-                sum += *end;
-                *end = sum;
-            }
-
-            Buckets { begin: buckets_begin, end: buckets_end, alphabet }
-        }
-
-        pub fn get(&self, symbol: A::Symbol) -> Bucket<&Idx> {
-            Bucket {
-                begin: &self.begin.as_ref()[symbol.as_()],
-                end: &self.end.as_ref()[symbol.as_()],
-            }
-        }
-
-        pub fn get_mut(&mut self, symbol: A::Symbol) -> Bucket<&mut Idx> {
-            Bucket {
-                begin: &mut self.begin.as_mut()[symbol.as_()],
-                end: &mut self.end.as_mut()[symbol.as_()],
-            }
-        }
+        histogram
     }
 
     #[derive(Debug, Clone)]
-    pub(super) struct Bucket<T> {
-        begin: T,
-        end: T,
+    pub(super) struct Buckets<A: Alphabet, Idx: ArrayIndex, K: BucketKind> {
+        pub inner: A::Buckets<Idx>,
+        _phantom: PhantomData<(A, K)>,
     }
 
-    impl<Idx: ArrayIndex, T: Deref<Target = Idx>> Bucket<T> {
-        pub fn begin(&self) -> Idx { *self.begin }
-
-        pub fn end(&self) -> Idx { *self.end }
+    impl<A: Alphabet, Idx: ArrayIndex, K: BucketKind> AsRef<[Idx]> for Buckets<A, Idx, K> {
+        fn as_ref(&self) -> &[Idx] { self.inner.as_ref() }
     }
 
-    impl<Idx: ArrayIndex> Bucket<&mut Idx> {
-        pub fn take_first(&mut self) -> Idx {
-            mem::replace(self.begin, *self.begin + Idx::ONE)
+    impl<A: Alphabet, Idx: ArrayIndex, K: BucketKind> AsMut<[Idx]> for Buckets<A, Idx, K> {
+        fn as_mut(&mut self) -> &mut [Idx] { self.inner.as_mut() }
+    }
+
+    impl<A: Alphabet, Idx: ArrayIndex, K: BucketKind> Buckets<A, Idx, K> {
+        pub fn new(histogram: &A::Buckets<Idx>, alphabet: A, _: K) -> Self {
+            let mut inner = alphabet.buckets();
+
+            let iter = zip(inner.as_mut(), histogram.as_ref());
+            iter.fold(Idx::ZERO, |sum, (dst, n)| {
+                *dst = K::next(sum, *n);
+                sum + *n
+            });
+
+            Self { inner, _phantom: Default::default() }
         }
 
+        pub fn get(&self, symbol: A::Symbol) -> Bucket<&Idx, K> {
+            Bucket(&self.as_ref()[symbol.as_()], Default::default())
+        }
+
+        pub fn get_mut(&mut self, symbol: A::Symbol) -> Bucket<&mut Idx, K> {
+            Bucket(&mut self.as_mut()[symbol.as_()], Default::default())
+        }
+
+        pub fn iter(&self) -> slice::Iter<Idx> { self.as_ref().iter() }
+    }
+
+    // TODO I don't really need this type anymore
+    #[derive(Debug, Clone)]
+    pub(super) struct Bucket<T, K: BucketKind>(T, PhantomData<K>);
+
+    impl<Idx: ArrayIndex, T: Deref<Target = Idx>, K: BucketKind> Bucket<T, K> {
+        pub fn index(&self) -> Idx { *self.0 }
+    }
+
+    impl<Idx: ArrayIndex> Bucket<&mut Idx, Begin> {
+        pub fn take_first(&mut self) -> Idx { mem::replace(self.0, *self.0 + Idx::ONE) }
+    }
+
+    impl<Idx: ArrayIndex> Bucket<&mut Idx, End> {
         pub fn take_last(&mut self) -> Idx {
-            *self.end -= Idx::ONE;
-            *self.end
+            *self.0 -= Idx::ONE;
+            *self.0
+        }
+    }
+
+    pub(super) mod kind {
+        use std::ops::Add;
+
+        #[derive(Debug, Clone, Copy)]
+        pub struct Begin;
+
+        #[derive(Debug, Clone, Copy)]
+        pub struct End;
+
+        pub trait BucketKind {
+            fn next<T: Add<Output = T>>(sum: T, cnt: T) -> T;
+        }
+
+        impl BucketKind for Begin {
+            fn next<T: Add<Output = T>>(sum: T, _: T) -> T { sum }
+        }
+
+        impl BucketKind for End {
+            fn next<T: Add<Output = T>>(sum: T, cnt: T) -> T { sum + cnt }
         }
     }
 }

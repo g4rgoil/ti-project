@@ -82,6 +82,7 @@ pub trait AsPrimitive<T>: 'static + Copy {
     fn as_(self) -> T;
 }
 
+#[doc(hidden)]
 macro_rules! impl_as_primitive {
     ($($src:ty),+ => $dst:ty ) => {
         $(
