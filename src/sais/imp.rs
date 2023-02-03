@@ -1,57 +1,70 @@
 use std::iter::zip;
-use std::{mem, slice};
+use std::mem;
 
-use self::marked::marked_if;
-use self::{lms::iter_lms, marked::Markable};
-use super::bucket::kind::BucketKind;
-use super::index::SignedIndex;
-use crate::num::*;
-use crate::sa::alphabet::{Alphabet, IndexAlphabet, Symbol};
-use crate::sais::bucket::kind::{Begin, BucketExt, End};
+use self::marked::{marked_if, Markable};
+use crate::prelude::*;
+use crate::sa::alphabet::*;
 use crate::sais::bucket::*;
 
 
-pub(super) fn sais_impl<A: Alphabet, Idx: SignedIndex>(
+pub(super) fn sais_impl<A: Alphabet, Idx: ArrayIndex + Signed>(
     text: &[A::Symbol],
     sa: &mut [Idx],
     alphabet: A,
+    fs: &mut [Idx],
 ) -> usize {
     if text.is_empty() {
         return 0;
     }
 
-    let mut memory = 4 * alphabet.size() * mem::size_of::<Idx>();
-    let hist = histogram(text, alphabet);
-    let mut begin = Buckets::new(alphabet);
-    let mut end = Buckets::new(alphabet);
-    let mut lms_buckets = Buckets::new(alphabet);
-    (&mut begin, &mut end, &mut lms_buckets).write(&hist);
+    let mut memory = 2 * alphabet.size() * mem::size_of::<Idx>();
 
-    let num_lms = sort_lms_strs(text, sa, &mut lms_buckets, &mut begin, &mut end);
+    let mut hist = (alphabet.size() > fs.len()).then(|| {
+        memory += alphabet.size() * mem::size_of::<Idx>();
+        vec![zero(); alphabet.size()]
+    });
+
+    let hist = hist.as_deref_mut().unwrap_or_else(|| {
+        let slice = &mut fs[..alphabet.size()];
+        slice.fill(zero());
+        slice
+    });
+
+    for c in text {
+        hist[c.as_()] += one();
+    }
+
+    let buckets = &mut *vec![zero(); alphabet.size()];
+    let lms_buckets = &mut *vec![zero(); alphabet.size()];
+    let mut lms_buckets = Buckets::write(lms_buckets, hist);
+
+    let num_lms = sort_lms_strs(text, sa, &mut lms_buckets, buckets, hist);
     let (lms, tail) = sa.split_at_mut(num_lms);
 
     memory += sort_lms_recursive(text, lms, tail);
     tail.fill(zero());
 
-    (&mut begin, &mut end).write(&hist);
-    induce_final_order(text, sa, lms_buckets, begin, end, num_lms);
+    induce_final_order(text, sa, lms_buckets, buckets, hist, num_lms);
     memory
 }
 
-#[inline(always)]
-fn sort_lms_strs<A: Alphabet, Idx: SignedIndex>(
-    text: &[A::Symbol],
+/// Postconditions:
+/// - `sa` contains all LMS suffixes in the first `num_lms` positions
+/// - The suffixes are sorted by corresponding LMS substring
+fn sort_lms_strs<Idx: ArrayIndex + Signed>(
+    text: &[impl Symbol],
     sa: &mut [Idx],
-    lms_buckets: &mut Buckets<A, Idx, End>,
-    begin: &mut Buckets<A, Idx, Begin>,
-    end: &mut Buckets<A, Idx, End>,
+    lms_buckets: &mut Buckets<Idx, End>,
+    buckets: &mut [Idx],
+    histogram: &[Idx],
 ) -> usize {
     let sa = Markable::cast_mut_slice(sa);
+    let mut begin = Buckets::write(buckets, histogram);
 
     // Write LMS suffixes in text order at the end of buckets
-    for lms in iter_lms(text) {
+    for lms in lms::iter_lms(text) {
         let dst = lms_buckets.take_last(text[lms]).as_();
-        sa[dst] = Markable::unmarked(lms.to_index());
+        sa[dst] = Markable::new(lms.to_index());
     }
 
     // Emulate LMS suffix of guardian element
@@ -63,38 +76,44 @@ fn sort_lms_strs<A: Alphabet, Idx: SignedIndex>(
     // Induce suffixes of type L
     for i in 0..sa.len() {
         let value = sa[i];
-        sa[i] = if value.is_marked() { value.inverse() } else { zero() };
 
         if value.is_unmarked_positive() {
-            let idx = value.get().as_() - 1;
-            let (lhs, rhs) = (text[idx.saturating_sub(1)], text[idx]);
+            let idx = value.get() - one();
+            let lhs = text[idx.as_().saturating_sub(1)];
+            let rhs = text[idx.as_()];
 
-            let dst = begin.take_first(rhs).as_();
-            sa[dst] = marked_if(lhs < rhs, idx.to_index());
+            sa[begin.take_first(rhs).as_()] = marked_if(lhs < rhs, idx);
+            sa[i] = zero();
+        } else {
+            sa[i] = value.inverse();
         }
     }
+
+    let mut end = Buckets::write(buckets, histogram);
 
     // Induce suffixes of type S
     for i in (0..sa.len()).rev() {
         let value = sa[i];
-        // TODO what about - one here?
         if value.is_unmarked_positive() {
-            let idx = value.get().as_() - 1;
-            let (lhs, rhs) = (text[idx.saturating_sub(1)], text[idx]);
+            let idx = value.get() - one();
+            let lhs = text[idx.as_().saturating_sub(1)];
+            let rhs = text[idx.as_()];
 
-            let dst = end.take_last(rhs).as_();
-            sa[dst] = marked_if(lhs > rhs, idx.to_index());
+            sa[end.take_last(rhs).as_()] = marked_if(lhs > rhs, idx);
         }
     }
 
     // Compact LMS suffixes at front
-    compress(sa, |idx| idx.is_marked_positive().then(|| Markable::unmarked(idx.get())))
-
-    // Postcondition: `sa` contains all LMS suffixes in the first `num_lms` positions.
-    // The suffixes are sorted lexicographically by corresponding LMS substring.
+    compress(sa, |idx| idx.is_marked_positive().then(|| Markable::new(idx.get())))
 }
 
-fn sort_lms_recursive<Idx: SignedIndex, S: Symbol>(
+
+/// Preconditions:
+/// - `lms` contains LMS suffies sorted by corresponding LMS substring
+///
+/// Postcondition:
+/// - `lms` contains LMS suffixes sorted lexicographically
+fn sort_lms_recursive<Idx: ArrayIndex + Signed, S: Symbol>(
     text: &[S],
     lms: &mut [Idx],
     tail: &mut [Idx],
@@ -102,7 +121,7 @@ fn sort_lms_recursive<Idx: SignedIndex, S: Symbol>(
     tail.fill(zero());
 
     // store end of LMS substrings
-    iter_lms(text).fold(text.len(), |lms_end, lms_begin| {
+    lms::iter_lms(text).fold(text.len(), |lms_end, lms_begin| {
         tail[lms_begin / 2] = lms_end.to_index();
         lms_begin + 1
     });
@@ -124,9 +143,9 @@ fn sort_lms_recursive<Idx: SignedIndex, S: Symbol>(
         let alphabet = IndexAlphabet::<Idx>::new(size.as_());
 
         lms.fill(zero());
-        let memory = sais_impl::<_, Idx>(lms_text, lms, alphabet);
+        let memory = sais_impl::<_, Idx>(lms_text, lms, alphabet, tail);
 
-        for (lms_begin, dst) in zip(iter_lms(text), lms_text.iter_mut().rev()) {
+        for (lms_begin, dst) in lms::iter_lms(text).zip(lms_text.iter_mut().rev()) {
             *dst = lms_begin.to_index();
         }
 
@@ -138,8 +157,6 @@ fn sort_lms_recursive<Idx: SignedIndex, S: Symbol>(
     } else {
         0
     }
-
-    // Postcondition: `lms` contains LMS suffixes sorted lexicographically
 }
 
 /// Preconditions:
@@ -148,15 +165,16 @@ fn sort_lms_recursive<Idx: SignedIndex, S: Symbol>(
 ///
 /// Postcondition:
 /// - `sa` contains the suffix array for `text`
-#[inline(always)]
-fn induce_final_order<A: Alphabet, Idx: SignedIndex>(
-    text: &[A::Symbol],
+fn induce_final_order<Idx: ArrayIndex + Signed>(
+    text: &[impl Symbol],
     sa: &mut [Idx],
-    lms_buckets: Buckets<A, Idx, End>,
-    mut begin: Buckets<A, Idx, Begin>,
-    mut end: Buckets<A, Idx, End>,
+    lms_buckets: Buckets<Idx, End>,
+    buckets: &mut [Idx],
+    histogram: &[Idx],
     num_lms: usize,
 ) {
+    let mut begin = Buckets::write(buckets, histogram);
+
     let lms_begin = lms_buckets.iter();
     let lms_end = begin.iter().skip(1);
 
@@ -173,8 +191,8 @@ fn induce_final_order<A: Alphabet, Idx: SignedIndex>(
 
     // Emulate LMS suffix of guardian element
     if let &[.., lhs, rhs] = text {
-        let dst = begin.take_first(rhs);
-        sa[dst.as_()] = marked_if(lhs < rhs, (text.len() - 1).to_index());
+        let dst = begin.take_first(rhs).as_();
+        sa[dst] = marked_if(lhs < rhs, (text.len() - 1).to_index());
     }
 
     // Induce suffixes of type L
@@ -183,33 +201,34 @@ fn induce_final_order<A: Alphabet, Idx: SignedIndex>(
         sa[i] = value.inverse();
 
         if value.is_unmarked_positive() {
-            let idx = value.get().as_() - 1;
-            let (lhs, rhs) = (text[idx.saturating_sub(1)], text[idx]);
+            let idx = value.get() - one();
+            let lhs = text[idx.as_().saturating_sub(1)];
+            let rhs = text[idx.as_()];
 
-            let dst = begin.take_first(rhs).as_();
-            sa[dst] = marked_if(lhs < rhs, idx.to_index());
+            sa[begin.take_first(rhs).as_()] = marked_if(lhs < rhs, idx);
         }
     }
+
+    let mut end = Buckets::write(buckets, histogram);
 
     // Induce suffixes of type S
     for i in (0..sa.len()).rev() {
         let value = sa[i];
-        sa[i] = Markable::unmarked(value.get());
 
-        // TODO let lhs = text[idx - (idx > 0) as usize];
         if value.is_unmarked_positive() {
-            let idx = value.get().as_() - 1;
-            let (lhs, rhs) = (text[idx.saturating_sub(1)], text[idx]);
+            let idx = value.get() - one();
+            let lhs = text[idx.as_().saturating_sub(1)];
+            let rhs = text[idx.as_()];
 
-            let dst = end.take_last(rhs).as_();
-            sa[dst] = marked_if(lhs > rhs, idx.to_index());
+            sa[end.take_last(rhs).as_()] = marked_if(lhs > rhs, idx);
+        } else {
+            sa[i] = Markable::new(value.get());
         }
     }
 }
 
 /// Calls `f` on every element of `slice` and moves those that return
 /// [`Option::Some`] to the front of `slice`.
-#[inline(always)]
 fn compress<T>(slice: &mut [T], mut f: impl FnMut(&T) -> Option<T>) -> usize {
     (0..slice.len()).fold(0, |i, j| match f(&slice[j]) {
         Some(value) => {
@@ -222,18 +241,13 @@ fn compress<T>(slice: &mut [T], mut f: impl FnMut(&T) -> Option<T>) -> usize {
 }
 
 mod marked {
-    use core::fmt;
-    use std::ops::Not;
+    use crate::prelude::*;
 
-    use crate::{num::*, sais::index::SignedIndex};
-
-    pub fn marked_if<T: SignedIndex>(pred: bool, value: T) -> Markable<T> {
+    pub fn marked_if<T: ArrayIndex + Signed>(pred: bool, value: T) -> Markable<T> {
         debug_assert!(!value.is_negative());
         Markable(value | ((pred as usize) << (T::BITS - 1)).to_index())
     }
 
-
-    // TODO this does not belong here
     #[derive(Clone, Copy, PartialEq, Eq)]
     #[repr(transparent)]
     pub struct Markable<T>(T);
@@ -246,25 +260,13 @@ mod marked {
         const ZERO: Self = Self(T::ZERO);
     }
 
-    impl<T: Limits + Zero> Limits for Markable<T> {
-        const MAX: Self = Self(T::MAX);
-        const MIN: Self = Self(T::ZERO);
-    }
-
-    impl<T: SignedIndex> Markable<T> {
-        pub fn marked(value: T) -> Self {
-            debug_assert!(!value.is_negative());
-            Self(value | T::MIN)
-        }
-
-        pub fn unmarked(value: T) -> Self {
+    impl<T: ArrayIndex + Signed> Markable<T> {
+        pub fn new(value: T) -> Self {
             debug_assert!(!value.is_negative());
             Self(value)
         }
 
         pub fn is_marked(&self) -> bool { self.0.is_negative() }
-
-        pub fn is_unmarked(&self) -> bool { !self.0.is_negative() }
 
         pub fn is_marked_positive(&self) -> bool { self.inverse().0.is_positive() }
 
@@ -281,23 +283,12 @@ mod marked {
             unsafe { &mut *(slice as *mut _ as *mut _) }
         }
     }
-
-    impl<T: SignedIndex> fmt::Debug for Markable<T> {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            if self.is_marked() {
-                write!(f, "!{:?}", self.get())
-            } else {
-                write!(f, "{:?}", self.get())
-            }
-        }
-    }
 }
 
 mod lms {
     use std::iter::{Enumerate, Peekable, Rev};
     use std::slice;
 
-    use crate::sa;
     use crate::sa::alphabet::Symbol;
 
     pub fn iter_lms<S>(text: &[S]) -> LMSIter<S> {
@@ -335,7 +326,8 @@ mod lms {
 
 #[cfg(test)]
 mod test {
-    use crate::{num::*, sa, sais::*};
+    use crate::prelude::*;
+    use crate::sais;
 
     const LOREM_IPSUM_LONG: &[u8] = b"Lorem ipsum dolor sit amet, officia \
         excepteur ex fugiat reprehenderit enim labore culpa sint ad nisi Lorem \
@@ -349,10 +341,10 @@ mod test {
         commodo ex non excepteur duis sunt velit enim. Voluptate laboris sint \
         cupidatat ullamco ut ea consectetur et est culpa et culpa duis.";
 
-    fn sais<Idx: SignedIndex>(text: &[u8]) -> Box<[Idx]> {
+    fn sais<Idx: ArrayIndex + Signed>(text: &[u8]) -> Box<[Idx]> {
         let mut sa = vec![Idx::ZERO; text.len()].into_boxed_slice();
         let alphabet = sa::alphabet::ByteAlphabet;
-        let _ = imp::sais_impl::<_, Idx>(text, &mut sa, alphabet);
+        let _ = sais::imp::sais_impl::<_, Idx>(text, &mut sa, alphabet, &mut []);
         sa
     }
 
@@ -441,7 +433,7 @@ mod test {
 
     #[test]
     #[should_panic]
-    fn test_sais_lorem_ipsum_long_panic() { let sa = sais::<i8>(LOREM_IPSUM_LONG); }
+    fn test_sais_lorem_ipsum_long_panic() { let _ = sais::<i8>(LOREM_IPSUM_LONG); }
 
 
     #[test]

@@ -1,7 +1,9 @@
+//! Implements a number of algorithms for LCP array construction.
+
 use std::fmt;
 use std::iter::zip;
 
-use crate::index::{ArrayIndex, ToIndex};
+use crate::prelude::*;
 use crate::suffix_array::{InverseSuffixArray, SuffixArray};
 
 
@@ -14,7 +16,6 @@ use crate::suffix_array::{InverseSuffixArray, SuffixArray};
 ///
 /// - The LCP array has the same length as the original text.
 /// - For any text `LCP[0] == Idx::ZERO`.
-/// - TODO
 pub struct LCPArray<'sa, 'txt, T, Idx> {
     sa: &'sa SuffixArray<'txt, T, Idx>,
     lcp: Box<[Idx]>,
@@ -74,7 +75,7 @@ pub fn naive<'sa, 'txt, T: Ord, Idx: ArrayIndex>(
     sa: &'sa SuffixArray<'txt, T, Idx>,
 ) -> LCPArray<'sa, 'txt, T, Idx> {
     let text = sa.text();
-    let mut lcp = vec![Idx::ZERO; text.len()];
+    let mut lcp = vec![zero(); text.len()].into_boxed_slice();
 
     let iter = zip(sa.inner().iter(), lcp.iter_mut());
     iter.fold(&[][..], |prev, (i, dst)| {
@@ -83,7 +84,7 @@ pub fn naive<'sa, 'txt, T: Ord, Idx: ArrayIndex>(
         next
     });
 
-    LCPArray { lcp: lcp.into_boxed_slice(), sa }
+    LCPArray { lcp, sa }
 }
 
 /// Constructs an LCP array for the given text and suffix array using the
@@ -105,7 +106,7 @@ pub fn kasai<'sa, 'txt, T: Ord, Idx: ArrayIndex>(
         let lcp = lcp.spare_capacity_mut();
         let iter = isa.inner().iter().enumerate();
         iter.fold(0, |mut l, (i, &isa_i)| {
-            if isa_i != Idx::ZERO {
+            if isa_i != zero() {
                 let j = sa[isa_i.as_() - 1];
                 let suffix_i_l = &text[i + l..];
                 let suffix_j_l = &text[j.as_() + l..];
@@ -143,11 +144,10 @@ pub fn phi<'sa, 'txt, T: Ord, Idx: ArrayIndex>(
     sa: &'sa SuffixArray<'txt, T, Idx>,
 ) -> LCPArray<'sa, 'txt, T, Idx> {
     fn phi<Idx: ArrayIndex>(sa: &[Idx]) -> Box<[Idx]> {
-        let mut phi = vec![Idx::ZERO; sa.len()];
+        let mut phi = vec![zero(); sa.len()];
         for (i, &sa_i) in sa.iter().enumerate().skip(1) {
             phi[sa_i.as_()] = sa[i - 1];
         }
-
         phi.into_boxed_slice()
     }
 
@@ -162,84 +162,112 @@ pub fn phi<'sa, 'txt, T: Ord, Idx: ArrayIndex>(
 
     let mut lcp: Box<_> = sa.inner().iter().map(|&sa_i| phi[sa_i.as_()]).collect();
 
-    // TODO is there a better way?
-    if let Some(fst) = lcp.first_mut() {
-        *fst = Idx::ZERO;
+    if let [ref mut fst, ..] = *lcp {
+        *fst = zero();
     }
     LCPArray { sa, lcp }
 }
 
+pub fn common_prefix<T: PartialEq>(lhs: &[T], rhs: &[T]) -> usize {
+    zip(lhs, rhs).take_while(|(l, r)| l == r).count()
+}
+
+#[cfg(test)]
 mod test {
-    use super::*;
-    use crate::suffix_array as sa;
+    use crate::prelude::*;
+
+    fn test_lcp<'txt, Idx: ArrayIndex>(sa: &sa::SuffixArray<u8, Idx>, lcp: &[Idx]) {
+        assert_eq!(*super::naive(&sa).lcp, *lcp);
+        assert_eq!(*super::kasai(&sa.inverse()).lcp, *lcp);
+        assert_eq!(*super::phi(&sa).lcp, *lcp);
+    }
+
+    macro_rules! assert_lcp_eq {
+        ($text:expr, [$($idx:ty),*]) => {
+            $({
+                let sa = sa::naive::<_, $idx>($text).unwrap().1;
+                test_lcp::<$idx>(&sa, super::naive(&sa).inner());
+            })*
+        };
+        ($text:expr, $lcp:expr, [$($idx:ty),*]) => {
+            $( test_lcp::<$idx>(&sa::naive($text).unwrap().1, $lcp); )*
+        };
+    }
 
     #[test]
     fn test_empty_text() {
-        let text = b"".into();
-        let sa = sa::naive::<_, usize>(text);
-        let isa = sa.inverse();
-
-        assert_eq!(*naive(&sa).lcp, []);
-        assert_eq!(*kasai(&isa).lcp, []);
-        assert_eq!(*phi(&sa).lcp, []);
+        assert_lcp_eq!(b"", &[], [u8, i8, u16, i16, u32, i32, u64, i64, usize, isize]);
     }
 
     #[test]
     fn test_simple_text() {
-        let text = b"banana".into();
-        let sa = sa::naive::<_, usize>(text);
-        let isa = sa.inverse();
-        let lcp = [0, 1, 3, 0, 0, 2];
-
-        assert_eq!(*naive(&sa).lcp, lcp);
-        assert_eq!(*kasai(&isa).lcp, lcp);
-        assert_eq!(*phi(&sa).lcp, lcp);
+        assert_lcp_eq!(
+            b"banana",
+            &[0, 1, 3, 0, 0, 2],
+            [u8, i8, u16, i16, u32, i32, u64, i64, usize, isize]
+        );
     }
+
     #[test]
     fn test_lcp_slides_with_sentinel() {
-        let text = b"ababcabcabba\0".into();
-        let sa = sa::naive::<_, usize>(text);
-        let isa = sa.inverse();
-        let lcp = [0, 0, 1, 2, 2, 5, 0, 2, 1, 1, 4, 0, 3];
-
-        assert_eq!(*naive(&sa).lcp, lcp);
-        assert_eq!(*kasai(&isa).lcp, lcp);
-        assert_eq!(*phi(&sa).lcp, lcp);
+        assert_lcp_eq!(
+            b"ababcabcabba\0",
+            &[0, 0, 1, 2, 2, 5, 0, 2, 1, 1, 4, 0, 3],
+            [u8, i8, u16, i16, u32, i32, u64, i64, usize, isize]
+        );
     }
 
     #[test]
     fn test_lcp_slides_no_sentinel() {
-        let text = b"ababcabcabba".into();
-        let sa = sa::naive::<_, usize>(text);
-        let isa = sa.inverse();
-        let lcp = [0, 1, 2, 2, 5, 0, 2, 1, 1, 4, 0, 3];
-
-        assert_eq!(*naive(&sa).lcp, lcp);
-        assert_eq!(*kasai(&isa).lcp, lcp);
-        assert_eq!(*phi(&sa).lcp, lcp);
+        assert_lcp_eq!(
+            b"ababcabcabba",
+            &[0, 1, 2, 2, 5, 0, 2, 1, 1, 4, 0, 3],
+            [u8, i8, u16, i16, u32, i32, u64, i64, usize, isize]
+        );
     }
 
     #[test]
     fn test_lcp_wikipedia_with_sentinel() {
-        let text = b"immissiissippi\0".into();
-        let sa = sa::naive::<_, usize>(text);
-        let isa = sa.inverse();
-        let lcp = [0, 0, 1, 1, 1, 1, 4, 0, 1, 0, 1, 0, 2, 1, 3];
-
-        assert_eq!(*naive(&sa).lcp, lcp);
-        assert_eq!(*kasai(&isa).lcp, lcp);
-        assert_eq!(*phi(&sa).lcp, lcp);
+        assert_lcp_eq!(
+            b"immissiissippi\0",
+            &[0, 0, 1, 1, 1, 1, 4, 0, 1, 0, 1, 0, 2, 1, 3],
+            [u8, i8, u16, i16, u32, i32, u64, i64, usize, isize]
+        );
     }
 
     #[test]
     fn test_lcp_wikipedia_no_sentinel() {
-        let text = b"immissiissippi".into();
-        let sa = sa::naive::<_, usize>(text);
-        let isa = sa.inverse();
-        let lcp = [0, 1, 1, 1, 1, 4, 0, 1, 0, 1, 0, 2, 1, 3];
+        assert_lcp_eq!(
+            b"immissiissippi",
+            &[0, 1, 1, 1, 1, 4, 0, 1, 0, 1, 0, 2, 1, 3],
+            [u8, i8, u16, i16, u32, i32, u64, i64, usize, isize]
+        );
+    }
 
-        assert_eq!(*naive(&sa).lcp, lcp);
-        assert_eq!(*kasai(&isa).lcp, lcp);
-        assert_eq!(*phi(&sa).lcp, lcp);
+    #[test]
+    fn test_lcp_lorem_ipsum() {
+        assert_lcp_eq!(
+            b"Lorem ipsum dolor sit amet, qui minim labore adipisicing \
+            minim sint cillum sint consectetur cupidatat.",
+            [u8, i8, u16, i16, u32, i32, u64, i64, usize, isize]
+        );
+    }
+
+    #[test]
+    fn test_lcp_lorem_ipsum_long() {
+        assert_lcp_eq!(
+            b"Lorem ipsum dolor sit amet, officia \
+            excepteur ex fugiat reprehenderit enim labore culpa sint ad nisi Lorem \
+            pariatur mollit ex esse exercitation amet. Nisi anim cupidatat \
+            excepteur officia. Reprehenderit nostrud nostrud ipsum Lorem est \
+            aliquip amet voluptate voluptate dolor minim nulla est proident. \
+            Nostrud officia pariatur ut officia. Sit irure elit esse ea nulla sunt \
+            ex occaecat reprehenderit commodo officia dolor Lorem duis laboris \
+            cupidatat officia voluptate. Culpa proident adipisicing id nulla nisi \
+            laboris ex in Lorem sunt duis officia eiusmod. Aliqua reprehenderit \
+            commodo ex non excepteur duis sunt velit enim. Voluptate laboris sint \
+            cupidatat ullamco ut ea consectetur et est culpa et culpa duis.",
+            [u16, i16, u32, i32, u64, i64, usize, isize]
+        );
     }
 }

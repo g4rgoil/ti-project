@@ -1,26 +1,27 @@
 // TODO use stricter clippy options
 // TODO remove
 #![allow(clippy::missing_safety_doc)]
-#![allow(unused)]
+// TODO #![warn(clippy::pedantic)]
 
-
-// TODO define prelude
 
 pub mod lcp_array;
 pub mod num;
 pub mod sais;
 pub mod suffix_array;
 
+pub mod prelude {
+    pub use crate::index::{ArrayIndex, ToIndex};
+    pub use crate::lcp_array as lcp;
+    pub use crate::num::*;
+    pub use crate::suffix_array as sa;
+}
+
 use std::process::{self, ExitCode};
 use std::time::{Duration, Instant};
 use std::{env, fs, hint, io};
 
-use lcp_array as lcp;
-use num::ArrayIndex;
-use suffix_array as sa;
-
-use crate::sa::SuffixArray;
-use crate::sais::index::SignedIndex;
+use crate::cast::Transmutable;
+use crate::prelude::*;
 
 
 pub fn main() -> Result<TestResults, String> {
@@ -41,12 +42,12 @@ pub fn main() -> Result<TestResults, String> {
             })
     }
 
-    fn try_run_sa<Idx: sais::index::Index>(text: &[u8]) -> Option<TestResults>
+    fn try_run_sa<Idx>(text: &[u8]) -> Option<TestResults>
     where
-        Idx::Signed: SignedIndex,
+        Idx: ArrayIndex + IntTypes + Transmutable<Idx::Signed>,
+        Idx::Signed: ArrayIndex + Signed,
     {
         let (result, sa_time) = run_timed(|| sa::sais::<Idx>(text));
-
         // let times: Box<[Duration]> = std::iter::once(sa_time)
         //     .chain((0..5).map(|_| run_timed(|| sa::sais::<Idx>(text)).1))
         //     .map(|duration| dbg!(duration))
@@ -59,33 +60,33 @@ pub fn main() -> Result<TestResults, String> {
         //     times.iter().sum::<Duration>() / times.len() as u32
         // );
 
-        if let Ok((sa_memory, sa)) = result {
+        if let Ok((sa_memory, _sa)) = result {
             #[cfg(feature = "verify")]
             {
                 println!("verifying SA");
                 sa.verify(text);
             }
 
-            Some(TestResults { sa_time, sa_memory, ..run_lcp(text, sa) })
+            // TODO Some(TestResults { sa_time, sa_memory, ..run_lcp(text, sa) })
+            Some(TestResults { sa_time, sa_memory, ..Default::default() })
         } else {
             None
         }
     }
 
-    fn run_lcp<Idx: ArrayIndex>(text: &[u8], sa: SuffixArray<u8, Idx>) -> TestResults {
-        // let (_lcp_naive, lcp_naive_time) = run_timed(|| lcp::naive(&sa));
-        // let (_lcp_kasai, lcp_kasai_time) = run_timed(|| lcp::kasai(&sa.inverse()));
-        // let (_lcp_phi, lcp_phi_time) = run_timed(|| lcp::phi(&sa));
-        //
-        // #[cfg(feature = "verify")]
-        // {
-        //     _lcp_naive.verify();
-        //     _lcp_kasai.verify();
-        //     _lcp_phi.verify();
-        // }
-        //
-        // TestResults { lcp_naive_time, lcp_kasai_time, lcp_phi_time, ..Default::default() }
-        Default::default()
+    fn run_lcp<Idx: ArrayIndex>(sa: sa::SuffixArray<u8, Idx>) -> TestResults {
+        let (_lcp_naive, lcp_naive_time) = run_timed(|| lcp::naive(&sa));
+        let (_lcp_kasai, lcp_kasai_time) = run_timed(|| lcp::kasai(&sa.inverse()));
+        let (_lcp_phi, lcp_phi_time) = run_timed(|| lcp::phi(&sa));
+
+        #[cfg(feature = "verify")]
+        {
+            _lcp_naive.verify();
+            _lcp_kasai.verify();
+            _lcp_phi.verify();
+        }
+
+        TestResults { lcp_naive_time, lcp_kasai_time, lcp_phi_time, ..Default::default() }
     }
 
     let param = env::args().nth(1);
@@ -123,4 +124,60 @@ impl process::Termination for TestResults {
         );
         ExitCode::SUCCESS
     }
+}
+
+pub mod index {
+    use crate::num::*;
+
+    /// A trait for types that can be used to index texts.
+    pub trait ArrayIndex: PrimInt + AsPrimitive<usize> {
+        /// Convert a `usize` to `Self` with a primitve cast.
+        fn from_usize(value: usize) -> Self;
+    }
+
+    impl<T: PrimInt + AsPrimitive<usize>> ArrayIndex for T
+    where
+        usize: AsPrimitive<T>,
+    {
+        #[inline(always)]
+        fn from_usize(value: usize) -> Self { value.as_() }
+    }
+
+    /// An extensions trait to convert `usize`s to [`ArrayIndex`]s.
+    pub trait ToIndex<Idx: ArrayIndex> {
+        /// Convert `self` to a value of type `Idx` using a primitive cast.
+        fn to_index(self) -> Idx;
+    }
+
+    impl<Idx: ArrayIndex> ToIndex<Idx> for usize {
+        #[inline(always)]
+        fn to_index(self) -> Idx { Idx::from_usize(self) }
+    }
+}
+
+pub mod cast {
+    /// A trait to allow for save casting between certain types.
+    ///
+    /// If type `A`  implements `Transmutable<B>`, then it is safe to cast
+    /// between pointers of the two types. Additionally, it must be possible
+    /// to cast between slices of type `A` and `B`. The property must be
+    /// commutative, i.e. `B` must also be transmutable to `A`.
+    ///
+    /// In this crate, the trait is used to convert between slices of signed and
+    /// unsigned integers of equal size, e.g. &[u32] as &[i32].
+    ///
+    /// Note that incorrect implementations of this trait may lead to UB.
+    /// Therefore the trait, and implementations thereof are marked as unsafe.
+    pub unsafe trait Transmutable<T>: Sized {}
+
+    #[doc(hidden)]
+    macro_rules! impl_transmutable {
+            ($( $left:ty =>  $right:ty ),*) => {
+                $( unsafe impl Transmutable<$right> for $left {} )*
+            };
+        }
+
+    unsafe impl<T> Transmutable<T> for T {}
+    impl_transmutable!(u8 => i8, u16 => i16, u32 => i32, u64 => i64, usize => isize);
+    impl_transmutable!(i8 => u8, i16 => u16, i32 => u32, i64 => u64, isize => usize);
 }

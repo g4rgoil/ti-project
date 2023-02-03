@@ -1,12 +1,13 @@
 mod bucket;
 mod imp;
 
-use self::index::{Index, SignedIndex};
-use crate::{num::*, sa};
+use crate::cast::Transmutable;
+use crate::prelude::*;
 
-pub(super) fn sais<Idx: Index>(text: &[u8]) -> sa::SAResult<u8, Idx>
+pub fn sais<Idx>(text: &[u8]) -> sa::SAResult<u8, Idx>
 where
-    Idx::Signed: SignedIndex, // TODO this is bad
+    Idx: ArrayIndex + IntTypes + Transmutable<Idx::Signed>,
+    Idx::Signed: ArrayIndex,
 {
     let (len, cap) = (text.len(), Idx::Signed::MAX.as_());
     if len <= cap {
@@ -14,11 +15,13 @@ where
         let mut sa = vec![zero(); len].into_boxed_slice();
 
         let alphabet = sa::alphabet::ByteAlphabet;
-        memory += imp::sais_impl::<_, Idx::Signed>(text, &mut sa, alphabet);
+        memory += imp::sais_impl::<_, Idx::Signed>(text, &mut sa, alphabet, &mut []);
 
         debug_assert!(sa.iter().all(|i| !i.is_negative()));
 
-        // TODO Safety
+        // Safety: The bound `Idx: Transmutable<Idx::Signed>` guarantees that
+        // the cast is valid. The suffix array construction is valid, assuming
+        // the implementation of SAIS is correct.
         let sa = unsafe {
             let box_sa = Box::from_raw(Box::into_raw(sa) as _);
             sa::SuffixArray::new_unchecked(text, box_sa)
@@ -30,45 +33,9 @@ where
     }
 }
 
-
-pub mod index {
-    use crate::num::*;
-
-
-    // TODO this should be moved to a top level module with ArrayIndex
-    pub trait Index: ArrayIndex + IntTypes + Transmutable<Self::Signed>
-    where
-        Self::Signed: SignedIndex,
-    {
-    }
-
-    impl<T: ArrayIndex + IntTypes + Transmutable<Self::Signed>> Index for T where
-        Self::Signed: SignedIndex
-    {
-    }
-
-    // pointers of type Self can be safely cast to pointers of type T
-    pub unsafe trait Transmutable<T>: Sized {}
-
-    #[doc(hidden)]
-    macro_rules! impl_transmutable {
-            ($( $left:ty =>  $right:ty ),*) => {
-                $( unsafe impl Transmutable<$right> for $left {} )*
-            };
-        }
-
-    unsafe impl<T> Transmutable<T> for T {}
-    impl_transmutable!(u8 => i8, u16 => i16, u32 => i32, u64 => i64, usize => isize);
-    impl_transmutable!(i8 => u8, i16 => u16, i32 => u32, i64 => u64, isize => usize);
-
-    pub trait SignedIndex: ArrayIndex + Signed {}
-
-    impl<T: ArrayIndex + Signed> SignedIndex for T {}
-}
-
 #[cfg(test)]
 mod test {
-    use crate::{num::*, sa};
+    use crate::prelude::*;
 
     const LOREM_IPSUM_LONG: &[u8] = b"Lorem ipsum dolor sit amet, officia \
         excepteur ex fugiat reprehenderit enim labore culpa sint ad nisi Lorem \
@@ -83,7 +50,7 @@ mod test {
         cupidatat ullamco ut ea consectetur et est culpa et culpa duis.";
 
     macro_rules! assert_sais_eq {
-        ($text:expr, $expected:expr, for $($index:ty),* $(,)?) => {
+        ($text:expr, $expected:expr, [$($index:ty),*]) => {
             $({
                 let expected: &[$index] = $expected;
                 let result = $crate::sais::sais::<$index>($text);
@@ -99,7 +66,7 @@ mod test {
         assert_sais_eq!(
             b"immissiissippi\0",
             &[14, 13, 6, 0, 10, 3, 7, 2, 1, 12, 11, 5, 9, 4, 8],
-            for u8, i8, u16, i16, u32, i32, u64, i64, usize, isize
+            [u8, i8, u16, i16, u32, i32, u64, i64, usize, isize]
         );
     }
 
@@ -108,7 +75,7 @@ mod test {
         assert_sais_eq!(
             b"ababcabcabba",
             &[11, 0, 8, 5, 2, 10, 1, 9, 6, 3, 7, 4],
-            for u8, i8, u16, i16, u32, i32, u64, i64, usize, isize
+            [u8, i8, u16, i16, u32, i32, u64, i64, usize, isize]
         );
     }
 
@@ -117,7 +84,7 @@ mod test {
         assert_sais_eq!(
             b"aaaaaaaa",
             &[7, 6, 5, 4, 3, 2, 1, 0],
-            for u8, i8, u16, i16, u32, i32, u64, i64, usize, isize
+            [u8, i8, u16, i16, u32, i32, u64, i64, usize, isize]
         );
     }
 
@@ -128,7 +95,7 @@ mod test {
         assert_sais_eq!(
             text,
             &sa::naive(text).unwrap().1.into_inner(),
-            for u8, i8, u16, i16, u32, i32, u64, i64, usize, isize
+            [u8, i8, u16, i16, u32, i32, u64, i64, usize, isize]
         );
     }
 
@@ -138,7 +105,7 @@ mod test {
         assert_sais_eq!(
             text,
             &sa::naive(text).unwrap().1.into_inner(),
-            for u16, i16, u32, i32, u64, i64, usize, isize
+            [u16, i16, u32, i32, u64, i64, usize, isize]
         );
     }
 

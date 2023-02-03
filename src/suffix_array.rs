@@ -1,14 +1,14 @@
 use std::fmt;
 use std::iter::zip;
 
+pub use alphabet::Alphabet;
+
 use self::alphabet::Symbol;
-use crate::num::{ArrayIndex, AsPrimitive, Limits, ToIndex, Zero};
+use crate::cast::Transmutable;
+use crate::prelude::*;
 use crate::sais;
-use crate::sais::index::SignedIndex;
 
-
-pub type SAResult<'a, T, Idx> =
-    std::result::Result<(usize, SuffixArray<'a, T, Idx>), Error>;
+pub type SAResult<'a, T, Idx> = Result<(usize, SuffixArray<'a, T, Idx>), Error>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -25,7 +25,6 @@ pub enum Error {
 ///
 /// [`sort_by_key`]: slice::sort_by_key
 pub fn naive<T: Symbol, Idx: ArrayIndex>(text: &[T]) -> SAResult<T, Idx> {
-    // TODO put this into its own function
     if text.len().saturating_sub(1) <= Idx::MAX.as_() {
         let mut sa: Box<_> = (0..text.len()).map(Idx::from_usize).collect();
         sa.sort_unstable_by_key(|i| &text[i.as_()..]);
@@ -38,12 +37,11 @@ pub fn naive<T: Symbol, Idx: ArrayIndex>(text: &[T]) -> SAResult<T, Idx> {
     }
 }
 
-/// Computes the suffix array for `text` using Suffix-Array-Induced-Sorting (SAIS).
-///
-/// TODO
-pub fn sais<Idx: sais::index::Index>(text: &[u8]) -> SAResult<u8, Idx>
+/// Computes the suffix array for `text` using Suffix-Array Induced-Sorting (SAIS).
+pub fn sais<Idx>(text: &[u8]) -> SAResult<u8, Idx>
 where
-    Idx::Signed: SignedIndex,
+    Idx: ArrayIndex + IntTypes + Transmutable<Idx::Signed>,
+    Idx::Signed: ArrayIndex,
 {
     sais::sais(text)
 }
@@ -179,7 +177,8 @@ impl<'sa, 'txt, T: fmt::Debug, Idx: fmt::Debug> fmt::Debug
 pub mod alphabet {
     use std::{fmt, marker::PhantomData};
 
-    use crate::num::{ArrayIndex, AsPrimitive};
+    use crate::index::*;
+    use crate::num::*;
 
     // TODO actually use this trait for sa impls
     // TODO what about signed types?

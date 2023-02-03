@@ -1,62 +1,60 @@
-// TODO
-//! Most of the functionality in this module could be replaced with appropriate
-//! imports from the num_traits crate.
+//! A number of traits to allow for generic numeric types and arithmetic.
+//!
+//! This module is strongly inspired by the `num_traits` crate and strongly
+//! mirrors its structure.
 
-use core::fmt;
-use std::ops::{self, Add, AddAssign, Neg, Sub, SubAssign};
+use std::{fmt, ops};
 
+/// Returns the `1` element for `T`.
 pub const fn one<T: One>() -> T { T::ONE }
 
+/// Returns the `0` element for `T`.
 pub const fn zero<T: Zero>() -> T { T::ZERO }
 
-
-/// A trait for types that can be used to index texts.
-pub trait ArrayIndex: PrimInt + AsPrimitive<usize> {
-    fn from_usize(value: usize) -> Self;
-}
-
-#[doc(hidden)]
-macro_rules! impl_array_index {
-    ($( $type:ty ),*) => {
-        $( impl ArrayIndex for $type {
-            #[inline(always)]
-            fn from_usize(value: usize) -> Self { value as Self }
-        } )*
-    };
-}
-
-impl_array_index!(u8, i8, u16, i16, u32, i32, u64, i64, usize, isize);
-
-/// An extensions trait to convert `usize`s to [`ArrayIndex`]s.
-pub trait ToIndex<Idx: ArrayIndex> {
-    /// Convert `self` to a value of type `Idx` using a primitive cast.
-    fn to_index(self) -> Idx;
-}
-
-impl<Idx: ArrayIndex> ToIndex<Idx> for usize {
-    #[inline(always)]
-    fn to_index(self) -> Idx { Idx::from_usize(self) }
-}
-
+/// Base trait for primitve integers.
+///
+/// Covers basic constants, numeric operations, and logical operations. Types
+/// are expected to behave like fixed-size integers (e.g. `u8`, `i32`, ...).
 pub trait PrimInt:
-    Sized + Default + Copy + Ord + Zero + One + Limits + NumOps + fmt::Debug
+    Sized
+    + Default
+    + Copy
+    + Ord
+    + Num
+    + Limits
+    + ops::Not<Output = Self>
+    + ops::BitAnd<Output = Self>
+    + ops::BitAndAssign
+    + ops::BitOr<Output = Self>
+    + ops::BitOrAssign
+    + ops::BitXor<Output = Self>
+    + ops::BitXorAssign
+    + fmt::Debug
 {
     const BITS: u32;
 }
 
+/// Base trait for numeric types with `0` and `1` values, as well as basic
+/// numeric operations and equality operation.
+pub trait Num: PartialEq + Zero + One + NumOps {}
+
+/// Defines the additive identity element for `Self`.
 pub trait Zero {
     const ZERO: Self;
 }
 
+/// Defines the multiplicative identity element for `Self`.
 pub trait One {
     const ONE: Self;
 }
 
+/// Defines the upper and lower limit for `Self`.
 pub trait Limits {
     const MIN: Self;
     const MAX: Self;
 }
 
+/// A trait for types implementing basic numeric operations.
 pub trait NumOps:
     Sized
     + ops::Add<Output = Self>
@@ -67,17 +65,6 @@ pub trait NumOps:
     + ops::MulAssign
     + ops::Div<Output = Self>
     + ops::DivAssign
-    + ops::BitAnd<Output = Self>
-    + ops::BitAndAssign
-    + ops::BitOr<Output = Self>
-    + ops::BitOrAssign
-    + ops::BitXor<Output = Self>
-    + ops::BitXor
-    + ops::Shl<Output = Self>
-    + ops::ShlAssign
-    + ops::Shr<Output = Self>
-    + ops::ShrAssign
-    + ops::Not<Output = Self>
 {
 }
 
@@ -86,6 +73,7 @@ macro_rules! impl_prim_int {
     ($( $type:ty ),*) => {
         $(
             impl PrimInt for $type { const BITS: u32 = <$type>::BITS; }
+            impl Num for $type { }
             impl Zero for $type { const ZERO: Self = 0; }
             impl One for $type { const ONE: Self = 1; }
             impl Limits for $type {
@@ -99,7 +87,14 @@ macro_rules! impl_prim_int {
 
 impl_prim_int!(u8, i8, u16, i16, u32, i32, u64, i64, usize, isize);
 
-pub trait Signed: Sized + Neg<Output = Self> {
+/// A trait for types with signed and unsigned versions.
+pub trait IntTypes {
+    type Signed: IntTypes + Signed;
+    type Unsigned: IntTypes + Unsigned;
+}
+
+/// Defines operations for signed types.
+pub trait Signed: Num + ops::Neg<Output = Self> {
     fn is_positive(&self) -> bool;
     fn is_negative(&self) -> bool;
 }
@@ -119,11 +114,17 @@ macro_rules! impl_signed {
 
 impl_signed!(i8, i16, i32, i64, isize);
 
-// TODO better name for this
-pub trait IntTypes {
-    type Signed: IntTypes;
-    type Unsigned: IntTypes;
+/// A trait for values wich cannot be negative.
+pub trait Unsigned: Num {}
+
+#[doc(hidden)]
+macro_rules! impl_unsigned {
+    ($( $type:ty ),*) => {
+        $( impl Unsigned for $type { } )*
+    };
 }
+
+impl_unsigned!(u8, u16, u32, u64, usize);
 
 #[doc(hidden)]
 macro_rules! impl_int_types {
@@ -141,8 +142,7 @@ macro_rules! impl_int_types {
 
 impl_int_types!(u8 => i8, u16 => i16, u32 => i32, u64 => i64, usize => isize);
 
-/// A trait for conversions between primitive integers. Pretty much a straight
-/// copy of the equally named trait in the `num_traits` crate.
+/// A trait counterpart to the builtin primitve casts.
 pub trait AsPrimitive<T>: 'static + Copy {
     /// Coverts `self` to a value of type `T` using a primitve cast. This
     /// functions is explicitly allowed to lose information.
