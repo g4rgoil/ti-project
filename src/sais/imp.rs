@@ -3,7 +3,7 @@ use std::mem;
 
 use self::marked::{marked_if, Markable};
 use crate::prelude::*;
-use crate::sa::alphabet::*;
+use crate::sa::alphabet::{self, *};
 use crate::sais::bucket::*;
 
 
@@ -19,22 +19,22 @@ pub(super) fn sais_impl<A: Alphabet, Idx: ArrayIndex + Signed>(
 
     let mut memory = 2 * alphabet.size() * mem::size_of::<Idx>();
 
-    let mut hist = (alphabet.size() > fs.len()).then(|| {
-        memory += alphabet.size() * mem::size_of::<Idx>();
-        vec![zero(); alphabet.size()]
-    });
-
-    let hist = hist.as_deref_mut().unwrap_or_else(|| {
-        let slice = &mut fs[..alphabet.size()];
-        slice.fill(zero());
-        slice
-    });
-
+    let hist = &mut vec![zero(); alphabet.size()];
     for c in text {
         hist[c.as_()] += one();
     }
 
-    let buckets = &mut *vec![zero(); alphabet.size()];
+    let mut buckets = (alphabet.size() > fs.len()).then(|| {
+        memory += alphabet.size() * mem::size_of::<Idx>();
+        vec![zero(); alphabet.size()]
+    });
+    let (fs, buckets) = match buckets.as_deref_mut() {
+        Some(buckets) => (fs, buckets),
+        None => fs.split_at_mut(fs.len() - alphabet.size()),
+    };
+
+    dbg!(fs.len() >= alphabet.size());
+
     let lms_buckets = &mut *vec![zero(); alphabet.size()];
     let mut lms_buckets = Buckets::write(lms_buckets, hist);
 
@@ -59,13 +59,13 @@ fn sort_lms_strs<Idx: ArrayIndex + Signed>(
     histogram: &[Idx],
 ) -> usize {
     let sa = Markable::cast_mut_slice(sa);
-    let mut begin = Buckets::write(buckets, histogram);
 
     // Write LMS suffixes in text order at the end of buckets
-    for lms in lms::iter_lms(text) {
-        let dst = lms_buckets.take_last(text[lms]).as_();
-        sa[dst] = Markable::new(lms.to_index());
+    for (lms, c) in lms::iter_lms(text) {
+        sa[lms_buckets.take_last(*c).as_()] = Markable::new(lms.to_index());
     }
+
+    let mut begin = Buckets::write(buckets, histogram);
 
     // Emulate LMS suffix of guardian element
     if let &[.., lhs, rhs] = text {
@@ -89,9 +89,8 @@ fn sort_lms_strs<Idx: ArrayIndex + Signed>(
         }
     }
 
-    let mut end = Buckets::write(buckets, histogram);
-
     // Induce suffixes of type S
+    let mut end = Buckets::write(buckets, histogram);
     for i in (0..sa.len()).rev() {
         let value = sa[i];
         if value.is_unmarked_positive() {
@@ -121,7 +120,7 @@ fn sort_lms_recursive<Idx: ArrayIndex + Signed, S: Symbol>(
     tail.fill(zero());
 
     // store end of LMS substrings
-    lms::iter_lms(text).fold(text.len(), |lms_end, lms_begin| {
+    lms::iter_lms(text).fold(text.len(), |lms_end, (lms_begin, _)| {
         tail[lms_begin / 2] = lms_end.to_index();
         lms_begin + 1
     });
@@ -145,7 +144,7 @@ fn sort_lms_recursive<Idx: ArrayIndex + Signed, S: Symbol>(
         lms.fill(zero());
         let memory = sais_impl::<_, Idx>(lms_text, lms, alphabet, tail);
 
-        for (lms_begin, dst) in lms::iter_lms(text).zip(lms_text.iter_mut().rev()) {
+        for ((lms_begin, _), dst) in lms::iter_lms(text).zip(lms_text.iter_mut().rev()) {
             *dst = lms_begin.to_index();
         }
 
@@ -209,9 +208,8 @@ fn induce_final_order<Idx: ArrayIndex + Signed>(
         }
     }
 
-    let mut end = Buckets::write(buckets, histogram);
-
     // Induce suffixes of type S
+    let mut end = Buckets::write(buckets, histogram);
     for i in (0..sa.len()).rev() {
         let value = sa[i];
 
@@ -266,8 +264,6 @@ mod marked {
             Self(value)
         }
 
-        pub fn is_marked(&self) -> bool { self.0.is_negative() }
-
         pub fn is_marked_positive(&self) -> bool { self.inverse().0.is_positive() }
 
         pub fn is_unmarked_positive(&self) -> bool { self.0.is_positive() }
@@ -286,38 +282,36 @@ mod marked {
 }
 
 mod lms {
-    use std::iter::{Enumerate, Peekable, Rev};
-    use std::slice;
+    use std::{iter, mem, slice};
 
-    use crate::sa::alphabet::Symbol;
-
-    pub fn iter_lms<S>(text: &[S]) -> LMSIter<S> {
-        LMSIter { text: text.iter().enumerate().rev().peekable(), decreasing: false }
+    pub fn iter_lms<T: Ord>(text: &[T]) -> LMSIter<T> {
+        LMSIter { iter: text.iter().enumerate().rev(), prev: text.last() }
     }
 
-    pub struct LMSIter<'a, S> {
-        text: Peekable<Rev<Enumerate<slice::Iter<'a, S>>>>,
-        decreasing: bool,
+    pub struct LMSIter<'a, T> {
+        iter: iter::Rev<iter::Enumerate<slice::Iter<'a, T>>>,
+        prev: Option<&'a T>,
     }
 
-    impl<'a, S: Symbol> Iterator for LMSIter<'a, S> {
-        type Item = usize;
+    impl<'a, T: Ord> Iterator for LMSIter<'a, T> {
+        type Item = (usize, &'a T);
 
         #[inline(always)]
         fn next(&mut self) -> Option<Self::Item> {
-            let mut curr = self.text.next()?;
-
-            while let Some(&next) = self.text.peek() {
-                if self.decreasing {
-                    if next.1 > curr.1 {
-                        self.decreasing = false;
-                        return Some(curr.0);
+            if let Some(ref mut prev) = self.prev {
+                while let Some((_, value)) = self.iter.next() {
+                    if value < mem::replace(prev, value) {
+                        break;
                     }
-                } else {
-                    self.decreasing = next.1 < curr.1;
                 }
-                self.text.next();
-                curr = next;
+
+                while let Some((i, next)) = self.iter.next() {
+                    if next > *prev {
+                        return Some((i + 1, mem::replace(prev, next)));
+                    }
+                    *prev = next;
+                }
+                self.prev = None;
             }
             None
         }
@@ -352,7 +346,6 @@ mod test {
     fn test_sais_empty_text() {
         let sa = sais::<isize>(b"");
         let expected = [];
-
         assert_eq!(*sa, expected);
     }
 
@@ -360,7 +353,6 @@ mod test {
     fn test_sais_len_1() {
         let sa = sais::<isize>(b"a");
         let expected = [0];
-
         assert_eq!(*sa, expected);
     }
 
@@ -368,7 +360,6 @@ mod test {
     fn test_sais_wikipedia_with_sentinel() {
         let sa = sais::<isize>(b"immissiissippi\0");
         let expected = [14, 13, 6, 0, 10, 3, 7, 2, 1, 12, 11, 5, 9, 4, 8];
-
         assert_eq!(*sa, expected);
     }
 
@@ -418,6 +409,7 @@ mod test {
     fn test_sais_lorem_ipsum() {
         let text = b"Lorem ipsum dolor sit amet, qui minim labore adipisicing \
                    minim sint cillum sint consectetur cupidatat.";
+
         let sa = sais::<isize>(text);
         let expected = sa::naive(text).unwrap().1.into_inner();
         assert_eq!(*sa, *expected);
