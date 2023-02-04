@@ -1,19 +1,14 @@
-use core::slice;
-use std::any::Any;
 use std::iter::zip;
-use std::mem;
+use std::{mem, slice};
 
-use self::lms::{iter_lms, LMSIter};
-use super::bucket::kind::{BucketKind, Invalid};
+use self::marked::marked_if;
+use self::{lms::iter_lms, marked::Markable};
+use super::bucket::kind::BucketKind;
 use super::index::SignedIndex;
-use crate::num::{one, zero, ArrayIndex, ToIndex};
-use crate::sa::Symbol;
-use crate::sais::bucket::kind::{Begin, End};
-use crate::sais::marked::{marked, unmarked, MarkableIndex, MaybeMarked::*};
-use crate::sais::{
-    alphabet::{self, *},
-    bucket::*,
-};
+use crate::num::*;
+use crate::sa::alphabet::{Alphabet, IndexAlphabet, Symbol};
+use crate::sais::bucket::kind::{Begin, BucketExt, End};
+use crate::sais::bucket::*;
 use crate::text::Text;
 
 pub(super) fn sais_impl<A: Alphabet, Idx: SignedIndex>(
@@ -21,100 +16,86 @@ pub(super) fn sais_impl<A: Alphabet, Idx: SignedIndex>(
     sa: &mut [Idx],
     alphabet: A,
 ) -> usize {
-    debug_assert!(text.len() == sa.len());
-
     if text.is_empty() {
         return 0;
     }
 
-    let mut memory = 2 * alphabet.size() * mem::size_of::<Idx>();
-    let histogram = histogram(text, alphabet);
-    let buckets = Buckets::new(alphabet);
+    let mut memory = 4 * alphabet.size() * mem::size_of::<Idx>();
+    let hist = histogram(text, alphabet);
+    let mut begin = Buckets::new(alphabet);
+    let mut end = Buckets::new(alphabet);
+    let mut lms_buckets = Buckets::new(alphabet);
+    (&mut begin, &mut end, &mut lms_buckets).write(&hist);
 
-    let (num_lms, buckets) = sort_lms_substrs(text, sa, &histogram, buckets);
+    let num_lms = sort_lms_strs(text, sa, &mut lms_buckets, &mut begin, &mut end);
     let (lms, tail) = sa.split_at_mut(num_lms);
 
     memory += sort_lms_recursive(text, lms, tail);
     tail.fill(zero());
 
-    // Write sorted LMS suffixes into ends of buckets
-    let mut buckets = buckets.write::<End>(&histogram);
-    for i in (0..num_lms).rev() {
-        let idx = buckets.take_last(text[sa[i]]).as_();
-        sa[idx] = mem::replace(&mut sa[i], zero());
-    }
-
-    induce_suffixes(text, sa, &histogram, buckets);
+    (&mut begin, &mut end).write(&hist);
+    induce_final_order(text, sa, lms_buckets, begin, end, num_lms);
     memory
 }
 
-#[inline(never)]
-fn sort_lms_substrs<A: Alphabet, Idx: SignedIndex, K>(
+#[inline(always)]
+fn sort_lms_strs<A: Alphabet, Idx: SignedIndex>(
     text: &Text<A::Symbol>,
     sa: &mut [Idx],
-    histogram: &[Idx],
-    buckets: Buckets<A, Idx, K>,
-) -> (usize, Buckets<A, Idx, Invalid>) {
-    // TODO this can be done more efficiently
-    let sa = MarkableIndex::cast_mut_slice(sa);
-
-    let mut end = buckets.write::<End>(histogram);
+    lms_buckets: &mut Buckets<A, Idx, End>,
+    begin: &mut Buckets<A, Idx, Begin>,
+    end: &mut Buckets<A, Idx, End>,
+) -> usize {
+    let sa = Markable::cast_mut_slice(sa);
 
     // Write LMS suffixes in text order at the end of buckets
     for lms in iter_lms(text) {
-        sa[end.take_last(text[lms]).as_()] = marked(lms.to_index());
+        let dst = lms_buckets.take_last(text[lms]).as_();
+        sa[dst] = Markable::unmarked(lms.to_index());
     }
 
-    // Induce L suffixes
-    let mut buckets = end.write::<Begin>(histogram);
-
-    // Emulate S* suffix of guardian element
-    if let Some(last) = text.0.last() {
-        sa[buckets.take_first(*last).as_()] = unmarked((sa.len() - 1).to_index());
+    // Emulate LMS suffix of guardian element
+    if let &[.., lhs, rhs] = &text.0 {
+        let dst = begin.take_first(rhs).as_();
+        sa[dst] = marked_if(lhs < rhs, (text.len() - 1).to_index());
     }
 
+    // Induce suffixes of type L
     for i in 0..sa.len() {
-        if sa[i] != zero() {
-            let &[lhs, rhs] = text.window::<2>(sa[i].get() - one());
-            let ord = lhs.cmp(&rhs);
+        let value = sa[i];
+        sa[i] = if value.is_marked() { value.inverse() } else { zero() };
 
-            if ord.is_gt() || (ord.is_eq() && i < buckets.get(rhs).as_()) {
-                sa[buckets.take_first(lhs).as_()] = unmarked(sa[i].get() - one());
-            }
+        if value.is_unmarked_positive() {
+            let idx = value.get().as_() - 1;
+            let (lhs, rhs) = (text[idx.saturating_sub(1)], text[idx]);
+
+            let dst = begin.take_first(rhs).as_();
+            sa[dst] = marked_if(lhs < rhs, idx.to_index());
         }
     }
 
-    // Induce S suffixes
-    let mut buckets = buckets.write::<End>(histogram);
+    // Induce suffixes of type S
     for i in (0..sa.len()).rev() {
-        if sa[i].get() > one() {
-            let &[lhs, mid, rhs] = text.window::<3>(sa[i].get() - one() - one());
-            let ord = mid.cmp(&rhs);
+        let value = sa[i];
+        // TODO what about - one here?
+        if value.is_unmarked_positive() {
+            let idx = value.get().as_() - 1;
+            let (lhs, rhs) = (text[idx.saturating_sub(1)], text[idx]);
 
-            if (ord.is_lt() || (ord.is_eq() && i >= buckets.get(rhs).as_())) {
-                sa[buckets.take_last(mid).as_()] = if lhs > mid {
-                    marked(sa[i].get() - one())
-                } else {
-                    unmarked(sa[i].get() - one())
-                };
-            }
+            let dst = end.take_last(rhs).as_();
+            sa[dst] = marked_if(lhs > rhs, idx.to_index());
         }
     }
 
-    // compact lms suffixes at front
-    let num_lms = compress(sa, |value| match value.discern() {
-        Marked(value) => Some(unmarked(value)),
-        Unmarked(_) => None,
-    });
+    // Compact LMS suffixes at front
+    compress(sa, |idx| idx.is_marked_positive().then(|| Markable::unmarked(idx.get())))
 
     // Postcondition: `sa` contains all LMS suffixes in the first `num_lms` positions.
     // The suffixes are sorted lexicographically by corresponding LMS substring.
-    (num_lms, buckets.invalidate())
 }
 
-#[inline(never)]
-fn sort_lms_recursive<Idx: SignedIndex>(
-    text: &Text<impl Symbol>,
+fn sort_lms_recursive<Idx: SignedIndex, S: Symbol>(
+    text: &Text<S>,
     lms: &mut [Idx],
     tail: &mut [Idx],
 ) -> usize {
@@ -142,17 +123,10 @@ fn sort_lms_recursive<Idx: SignedIndex>(
         let (lms_text, tail) = tail.split_at_mut(len);
         let alphabet = IndexAlphabet::<Idx>::new(size.as_());
 
-        let memory = {
-            // TODO Safety
-            let lms_text =
-                unsafe { &*(lms_text as *const _ as *const [IndexSymbol<Idx>]) };
+        lms.fill(zero());
+        let memory = sais_impl::<_, Idx>(Text::from_slice(lms_text), lms, alphabet);
 
-            // TODO move this to sais_impl instead?
-            lms.fill(zero());
-            sais_impl::<_, Idx>(Text::from_slice(&lms_text), lms, alphabet)
-        };
-
-        for (lms_begin, dst) in iter_lms(text).zip(lms_text.iter_mut().rev()) {
+        for (lms_begin, dst) in zip(iter_lms(text), lms_text.iter_mut().rev()) {
             *dst = lms_begin.to_index();
         }
 
@@ -168,43 +142,67 @@ fn sort_lms_recursive<Idx: SignedIndex>(
     // Postcondition: `lms` contains LMS suffixes sorted lexicographically
 }
 
-#[inline(never)]
-fn induce_suffixes<A: Alphabet, Idx: ArrayIndex, K>(
+/// Preconditions:
+/// - `sa` contains sorted LMS suffixes in first `num_lms` positions
+/// - `lms_buckets` points to the beginning of LMS buckets
+///
+/// Postcondition:
+/// - `sa` contains the suffix array for `text`
+#[inline(always)]
+fn induce_final_order<A: Alphabet, Idx: SignedIndex>(
     text: &Text<A::Symbol>,
     sa: &mut [Idx],
-    histogram: &[Idx],
-    buckets: Buckets<A, Idx, K>,
+    lms_buckets: Buckets<A, Idx, End>,
+    mut begin: Buckets<A, Idx, Begin>,
+    mut end: Buckets<A, Idx, End>,
+    num_lms: usize,
 ) {
-    let mut buckets = buckets.write::<Begin>(histogram);
+    let lms_begin = lms_buckets.iter();
+    let lms_end = begin.iter().skip(1);
 
-    // Emulate S* suffix of guardian element
-    if let Some(last) = text.0.last() {
-        sa[buckets.take_first(*last).as_()] = (sa.len() - 1).to_index();
+    // Place LMS suffixes at end of buckets
+    zip(lms_begin, lms_end).rev().fold(num_lms, |mut src, (fst, lst)| {
+        for dst in (fst.as_()..lst.as_()).rev() {
+            src -= 1;
+            sa[dst] = mem::replace(&mut sa[src], zero());
+        }
+        src
+    });
+
+    let sa = Markable::cast_mut_slice(sa);
+
+    // Emulate LMS suffix of guardian element
+    if let &[.., lhs, rhs] = &text.0 {
+        let dst = begin.take_first(rhs);
+        sa[dst.as_()] = marked_if(lhs < rhs, (text.len() - 1).to_index());
     }
 
-    // Induce kind L suffixes
+    // Induce suffixes of type L
     for i in 0..sa.len() {
-        if sa[i] != zero() {
-            let &[text_lhs, text_rhs] = text.window::<2>(sa[i] - one());
-            let ord = text_lhs.cmp(&text_rhs);
+        let value = sa[i];
+        sa[i] = value.inverse();
 
-            if ord.is_gt() || (ord.is_eq() && i < buckets.get(text_rhs).as_()) {
-                sa[buckets.take_first(text_lhs).as_()] = sa[i] - one();
-            }
+        if value.is_unmarked_positive() {
+            let idx = value.get().as_() - 1;
+            let (lhs, rhs) = (text[idx.saturating_sub(1)], text[idx]);
+
+            let dst = begin.take_first(rhs).as_();
+            sa[dst] = marked_if(lhs < rhs, idx.to_index());
         }
     }
 
-    let mut buckets = buckets.write::<End>(histogram);
-
-    // Induce kind S suffixes
+    // Induce suffixes of type S
     for i in (0..sa.len()).rev() {
-        if sa[i] != zero() {
-            let &[text_lhs, text_rhs] = text.window::<2>(sa[i] - one());
-            let ord = text_lhs.cmp(&text_rhs);
+        let value = sa[i];
+        sa[i] = Markable::unmarked(value.get());
 
-            if ord.is_lt() || (ord.is_eq() && i >= buckets.get(text_rhs).as_()) {
-                sa[buckets.take_last(text_lhs).as_()] = sa[i] - one();
-            }
+        // TODO let lhs = text[idx - (idx > 0) as usize];
+        if value.is_unmarked_positive() {
+            let idx = value.get().as_() - 1;
+            let (lhs, rhs) = (text[idx.saturating_sub(1)], text[idx]);
+
+            let dst = end.take_last(rhs).as_();
+            sa[dst] = marked_if(lhs > rhs, idx.to_index());
         }
     }
 }
@@ -215,25 +213,97 @@ fn induce_suffixes<A: Alphabet, Idx: ArrayIndex, K>(
 fn compress<T>(slice: &mut [T], mut f: impl FnMut(&T) -> Option<T>) -> usize {
     (0..slice.len()).fold(0, |i, j| match f(&slice[j]) {
         Some(value) => {
-            slice[i] = value;
+            // Safety: i <= j < slice.len()
+            unsafe { *slice.get_unchecked_mut(i) = value };
             i + 1
         },
         None => i,
     })
 }
 
+mod marked {
+    use core::fmt;
+    use std::ops::Not;
+
+    use crate::{num::*, sais::index::SignedIndex};
+
+    pub fn marked_if<T: SignedIndex>(pred: bool, value: T) -> Markable<T> {
+        debug_assert!(!value.is_negative());
+        Markable(value | ((pred as usize) << (T::BITS - 1)).to_index())
+    }
+
+
+    // TODO this does not belong here
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    #[repr(transparent)]
+    pub struct Markable<T>(T);
+
+    impl<T: One> One for Markable<T> {
+        const ONE: Self = Self(T::ONE);
+    }
+
+    impl<T: Zero> Zero for Markable<T> {
+        const ZERO: Self = Self(T::ZERO);
+    }
+
+    impl<T: Limits + Zero> Limits for Markable<T> {
+        const MAX: Self = Self(T::MAX);
+        const MIN: Self = Self(T::ZERO);
+    }
+
+    impl<T: SignedIndex> Markable<T> {
+        pub fn marked(value: T) -> Self {
+            debug_assert!(!value.is_negative());
+            Self(value | T::MIN)
+        }
+
+        pub fn unmarked(value: T) -> Self {
+            debug_assert!(!value.is_negative());
+            Self(value)
+        }
+
+        pub fn is_marked(&self) -> bool { self.0.is_negative() }
+
+        pub fn is_unmarked(&self) -> bool { !self.0.is_negative() }
+
+        pub fn is_marked_positive(&self) -> bool { self.inverse().0.is_positive() }
+
+        pub fn is_unmarked_positive(&self) -> bool { self.0.is_positive() }
+
+        pub fn get(&self) -> T { self.0 & T::MAX }
+
+        pub fn inverse(&self) -> Self { Self(self.0 ^ T::MIN) }
+    }
+
+    impl<T> Markable<T> {
+        pub fn cast_mut_slice(slice: &mut [T]) -> &mut [Self] {
+            // Safety: `Markable<T>` has the same layout as `T`.
+            unsafe { &mut *(slice as *mut _ as *mut _) }
+        }
+    }
+
+    impl<T: SignedIndex> fmt::Debug for Markable<T> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            if self.is_marked() {
+                write!(f, "!{:?}", self.get())
+            } else {
+                write!(f, "{:?}", self.get())
+            }
+        }
+    }
+}
+
 mod lms {
     use std::iter::{Enumerate, Peekable, Rev};
     use std::slice;
 
-    use crate::suffix_array::Symbol;
-    use crate::text::Text;
+    use crate::sa::alphabet::Symbol;
+    use crate::{sa, text::Text};
 
     pub fn iter_lms<S>(text: &Text<S>) -> LMSIter<S> {
         LMSIter { text: text.iter().enumerate().rev().peekable(), decreasing: false }
     }
 
-    // TODO maybe remove this entirely
     pub struct LMSIter<'a, S> {
         text: Peekable<Rev<Enumerate<slice::Iter<'a, S>>>>,
         decreasing: bool,
@@ -265,8 +335,7 @@ mod lms {
 
 #[cfg(test)]
 mod test {
-    use super::{alphabet::ByteAlphabet, *};
-    use crate::{num::*, sa, sais::imp, text::Text};
+    use crate::{num::*, sa, sais::*, text::Text};
 
     const LOREM_IPSUM_LONG: &[u8] = b"Lorem ipsum dolor sit amet, officia \
         excepteur ex fugiat reprehenderit enim labore culpa sint ad nisi Lorem \
@@ -280,13 +349,28 @@ mod test {
         commodo ex non excepteur duis sunt velit enim. Voluptate laboris sint \
         cupidatat ullamco ut ea consectetur et est culpa et culpa duis.";
 
-    const A: ByteAlphabet = ByteAlphabet;
-
     fn sais<Idx: SignedIndex>(text: &[u8]) -> Box<[Idx]> {
         let text = Text::from_slice(text);
         let mut sa = vec![Idx::ZERO; text.len()].into_boxed_slice();
-        let _ = imp::sais_impl::<_, Idx>(text, &mut sa, A);
+        let alphabet = sa::alphabet::ByteAlphabet;
+        let _ = imp::sais_impl::<_, Idx>(text, &mut sa, alphabet);
         sa
+    }
+
+    #[test]
+    fn test_sais_empty_text() {
+        let sa = sais::<isize>(b"");
+        let expected = [];
+
+        assert_eq!(*sa, expected);
+    }
+
+    #[test]
+    fn test_sais_len_1() {
+        let sa = sais::<isize>(b"a");
+        let expected = [0];
+
+        assert_eq!(*sa, expected);
     }
 
     #[test]
@@ -344,7 +428,7 @@ mod test {
         let text = b"Lorem ipsum dolor sit amet, qui minim labore adipisicing \
                    minim sint cillum sint consectetur cupidatat.";
         let sa = sais::<isize>(text);
-        let expected = sa::naive(text.into()).unwrap().value.into_inner();
+        let expected = sa::naive(text.into()).unwrap().1.into_inner();
         assert_eq!(*sa, *expected);
     }
 
@@ -352,7 +436,7 @@ mod test {
     fn test_sais_lorem_ipsum_long() {
         let text = LOREM_IPSUM_LONG;
         let sa = sais::<isize>(text);
-        let expected = sa::naive(text.into()).unwrap().value.into_inner();
+        let expected = sa::naive(text.into()).unwrap().1.into_inner();
         assert_eq!(*sa, *expected);
     }
 
@@ -365,7 +449,7 @@ mod test {
     fn test_sais_dna() {
         let text = b"CAACAACAAAT";
         let sa = sais::<isize>(text);
-        let expected = sa::naive(text.into()).unwrap().value.into_inner();
+        let expected = sa::naive(text.into()).unwrap().1.into_inner();
         assert_eq!(*sa, *expected);
     }
 
@@ -373,7 +457,7 @@ mod test {
     fn test_sais_dna_2() {
         let text = b"TGTGGGACTGTGGAG";
         let sa = sais::<isize>(text);
-        let expected = sa::naive(text.into()).unwrap().value.into_inner();
+        let expected = sa::naive(text.into()).unwrap().1.into_inner();
         assert_eq!(*sa, *expected);
     }
 
@@ -381,7 +465,7 @@ mod test {
     fn test_sais_i8_maximum() {
         let text = &[0; 127];
         let sa = sais::<i8>(text);
-        let expected = sa::naive::<_, i8>(text.into()).unwrap().value.into_inner();
+        let expected = sa::naive::<_, i8>(text.into()).unwrap().1.into_inner();
         assert_eq!(*sa, *expected);
     }
 }

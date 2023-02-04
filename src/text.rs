@@ -1,6 +1,6 @@
 use std::{borrow::Borrow, fmt, ops, slice};
 
-use crate::index::ArrayIndex;
+use crate::num::ArrayIndex;
 
 /// A dynamically sized view into a text used for text indexing algorithms.
 ///
@@ -45,17 +45,6 @@ impl<T> Text<T> {
     /// assert_eq!(text.is_empty(), false);
     /// ```
     pub fn is_empty(&self) -> bool { self.0.is_empty() }
-
-    /// Returns `true` if the text can be indexed using `Idx`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// let text = Text::from_slice(&[0; 420]);
-    /// assert_eq!(text.fits_index::<u8>, false);
-    /// assert_eq!(text.fits_index::<u16>, true);
-    /// ```
-    pub fn fits_index<Idx: ArrayIndex>(&self) -> bool { self.len() <= Idx::MAX.as_() }
 
     /// Returns an iterator over the elements of the text.
     ///

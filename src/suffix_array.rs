@@ -1,14 +1,14 @@
-use std::fmt::{self, Debug};
+use std::fmt;
 use std::iter::zip;
 
-use self::result::MemoryResult;
+use self::alphabet::Symbol;
 use crate::num::{ArrayIndex, AsPrimitive, Limits, ToIndex, Zero};
 use crate::sais;
 use crate::sais::index::SignedIndex;
 use crate::text::Text;
 
-pub type Result<'txt, T, Idx> =
-    std::result::Result<MemoryResult<SuffixArray<'txt, T, Idx>>, Error>;
+pub type SAResult<'a, T, Idx> =
+    std::result::Result<(usize, SuffixArray<'a, T, Idx>), Error>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -24,16 +24,14 @@ pub enum Error {
 /// performance of the algorithm is _O(n² * log(n))_.
 ///
 /// [`sort_by_key`]: slice::sort_by_key
-pub fn naive<T: Symbol, Idx: ArrayIndex>(text: &Text<T>) -> Result<T, Idx> {
+pub fn naive<T: Symbol, Idx: ArrayIndex>(text: &Text<T>) -> SAResult<T, Idx> {
     // TODO put this into its own function
     if text.len().saturating_sub(1) <= Idx::MAX.as_() {
         let mut sa: Box<_> = (0..text.len()).map(Idx::from_usize).collect();
         sa.sort_unstable_by_key(|i| &text[*i..]);
 
-        // TODO don't count suffix array?!
-        let mut builder = MemoryResult::builder();
-        builder.add_values::<T>(text.len());
-        Ok(builder.build(SuffixArray { text, sa }))
+        let memory = sa.len() * std::mem::size_of::<Idx>();
+        Ok((memory, SuffixArray { text, sa }))
     } else {
         let (len, cap) = (text.len(), Idx::MAX.as_().saturating_add(1));
         Err(Error::IndexTooSmall { len, cap })
@@ -43,7 +41,7 @@ pub fn naive<T: Symbol, Idx: ArrayIndex>(text: &Text<T>) -> Result<T, Idx> {
 /// Computes the suffix array for `text` using Suffix-Array-Induced-Sorting (SAIS).
 ///
 /// TODO
-pub fn sais<Idx: sais::index::Index>(text: &Text<u8>) -> Result<u8, Idx>
+pub fn sais<Idx: sais::index::Index>(text: &Text<u8>) -> SAResult<u8, Idx>
 where
     Idx::Signed: SignedIndex,
 {
@@ -89,7 +87,7 @@ impl<'txt, T, Idx> SuffixArray<'txt, T, Idx> {
     {
         // TODO use MaybeUninit for optimization
 
-        let mut isa = vec![Idx::ZERO; self.sa.len()];
+        let mut isa = vec![Idx::ZERO; self.sa.len()].into_boxed_slice();
 
         for (i, sa_i) in self.sa.iter().enumerate() {
             // SAFETY: Because a SuffixArray is a permutation of (0, len),
@@ -97,7 +95,7 @@ impl<'txt, T, Idx> SuffixArray<'txt, T, Idx> {
             unsafe { *isa.get_unchecked_mut(sa_i.as_()) = i.to_index() };
         }
 
-        InverseSuffixArray { sa: self, isa: isa.into_boxed_slice() }
+        InverseSuffixArray { sa: self, isa }
     }
 
     /// Ensures that the suffix array upholds the required invariants, and
@@ -108,7 +106,7 @@ impl<'txt, T, Idx> SuffixArray<'txt, T, Idx> {
     pub fn verify(&self, text: &Text<T>)
     where
         Idx: ArrayIndex,
-        T: Ord + Debug,
+        T: Ord + fmt::Debug,
     {
         let is_increasing = zip(self.sa.iter(), self.sa.iter().skip(1))
             .all(|(i, j)| text[*i..] < text[*j..]);
@@ -178,55 +176,45 @@ impl<'sa, 'txt, T: fmt::Debug, Idx: fmt::Debug> fmt::Debug
     }
 }
 
-// TODO actually use this trait for sa impls
-// TODO what about signed types?
-pub trait Symbol:
-    Sized + Copy + Ord + Debug + Zero + Limits + AsPrimitive<usize>
-{
-}
+pub mod alphabet {
+    use std::{fmt, marker::PhantomData};
 
-#[doc(hidden)]
-macro_rules! impl_symbol {
-    ( $( $type:ty ),* ) => {
-        $( impl Symbol for $type {} )*
-    };
-}
+    use crate::num::{ArrayIndex, AsPrimitive};
 
-impl_symbol!(u8, u16, u32, u64, usize);
+    // TODO actually use this trait for sa impls
+    // TODO what about signed types?
+    pub trait Symbol: Sized + Copy + Ord + AsPrimitive<usize> + fmt::Debug {}
 
+    impl<T: ArrayIndex> Symbol for T {}
 
-pub mod result {
-    #[derive(Debug, Clone, Copy)]
-    #[must_use]
-    pub struct MemoryResult<T> {
-        pub value: T,
-        pub memory: usize,
-    }
+    pub trait Alphabet: Copy {
+        type Symbol: Symbol;
 
-    impl<T> MemoryResult<T> {
-        pub fn builder() -> Builder<T> {
-            Builder { memory: 0, _phantom: Default::default() }
-        }
-
-        pub fn add_to<S>(self, builder: &mut Builder<S>) -> T {
-            builder.memory += self.memory;
-            self.value
-        }
+        fn size(&self) -> usize;
     }
 
     #[derive(Debug, Clone, Copy)]
-    pub struct Builder<T> {
-        pub memory: usize,
-        _phantom: std::marker::PhantomData<T>,
+    pub struct ByteAlphabet;
+
+    impl Alphabet for ByteAlphabet {
+        type Symbol = u8;
+
+        fn size(&self) -> usize { u8::MAX as usize + 1 }
     }
 
-    impl<T> Builder<T> {
-        pub fn build(self, value: T) -> MemoryResult<T> {
-            MemoryResult { value, memory: self.memory }
-        }
+    #[derive(Debug, Clone, Copy)]
+    pub struct IndexAlphabet<Idx> {
+        size: usize,
+        _phantom: PhantomData<Idx>,
+    }
 
-        pub fn add_values<S>(&mut self, num: usize) {
-            self.memory += num * std::mem::size_of::<S>();
-        }
+    impl<Idx: ArrayIndex> IndexAlphabet<Idx> {
+        pub fn new(size: usize) -> Self { Self { size, _phantom: PhantomData } }
+    }
+
+    impl<Idx: Symbol> Alphabet for IndexAlphabet<Idx> {
+        type Symbol = Idx;
+
+        fn size(&self) -> usize { self.size }
     }
 }
