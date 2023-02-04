@@ -23,6 +23,9 @@ pub enum Error {
 /// Comparing two suffixes takes _O(n)_ time, therefore the worst case
 /// performance of the algorithm is _O(n² * log(n))_.
 ///
+/// The suffix array will use indices of type `Idx`. If the index is too
+/// _small_ for the given text, `Err(_)` is returned.
+///
 /// [`sort_by_key`]: slice::sort_by_key
 pub fn naive<T: Symbol, Idx: ArrayIndex>(text: &[T]) -> SAResult<T, Idx> {
     if text.len().saturating_sub(1) <= Idx::MAX.as_() {
@@ -37,7 +40,11 @@ pub fn naive<T: Symbol, Idx: ArrayIndex>(text: &[T]) -> SAResult<T, Idx> {
     }
 }
 
-/// Computes the suffix array for `text` using Suffix-Array Induced-Sorting (SAIS).
+/// Computes the suffix array for `text` using Suffix Array Induced Sorting (SAIS).
+///
+/// The suffix array will use indices of type `Idx`. The index must have a
+/// corresponding signed type as defined by [`IntTypes`]. The maxiumum allowable
+/// length for `text` is defined by the signed index type.
 pub fn sais<Idx>(text: &[u8]) -> SAResult<u8, Idx>
 where
     Idx: ArrayIndex + IntTypes + Transmutable<Idx::Signed>,
@@ -64,8 +71,12 @@ pub struct SuffixArray<'txt, T, Idx> {
 }
 
 impl<'txt, T, Idx> SuffixArray<'txt, T, Idx> {
+    /// Creates a suffix array for `text` using `sa`.
+    ///
+    /// # Safety
+    /// The caller must ensure that `sa` upholds all invariants of a suffix array.
     pub unsafe fn new_unchecked(text: &'txt [T], sa: Box<[Idx]>) -> Self {
-        // TODO debug asserts?
+        debug_assert_eq!(text.len(), sa.len());
         Self { text, sa }
     }
 
@@ -83,9 +94,7 @@ impl<'txt, T, Idx> SuffixArray<'txt, T, Idx> {
     where
         Idx: ArrayIndex,
     {
-        // TODO use MaybeUninit for optimization
-
-        let mut isa = vec![Idx::ZERO; self.sa.len()].into_boxed_slice();
+        let mut isa = vec![zero(); self.sa.len()].into_boxed_slice();
 
         for (i, sa_i) in self.sa.iter().enumerate() {
             // SAFETY: Because a SuffixArray is a permutation of (0, len),
@@ -180,11 +189,9 @@ pub mod alphabet {
     use crate::index::*;
     use crate::num::*;
 
-    // TODO actually use this trait for sa impls
-    // TODO what about signed types?
     pub trait Symbol: Sized + Copy + Ord + AsPrimitive<usize> + fmt::Debug {}
 
-    impl<T: ArrayIndex> Symbol for T {}
+    impl<T: PrimInt + AsPrimitive<usize>> Symbol for T {}
 
     pub trait Alphabet: Copy {
         type Symbol: Symbol;

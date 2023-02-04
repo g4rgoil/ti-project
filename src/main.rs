@@ -1,9 +1,3 @@
-// TODO use stricter clippy options
-// TODO remove
-#![allow(clippy::missing_safety_doc)]
-// TODO #![warn(clippy::pedantic)]
-
-
 pub mod lcp_array;
 pub mod num;
 pub mod sais;
@@ -48,30 +42,14 @@ pub fn main() -> Result<TestResults, String> {
         Idx::Signed: ArrayIndex + Signed,
     {
         let (result, sa_time) = run_timed(|| sa::sais::<Idx>(text));
-        // let times: Box<[Duration]> = std::iter::once(sa_time)
-        //     .chain((0..5).map(|_| run_timed(|| sa::sais::<Idx>(text)).1))
-        //     .map(|duration| dbg!(duration))
-        //     .collect();
-        //
-        // println!(
-        //     "min={:?}, max={:?}, avg={:?}",
-        //     times.iter().min().unwrap(),
-        //     times.iter().max().unwrap(),
-        //     times.iter().sum::<Duration>() / times.len() as u32
-        // );
+        let (sa_memory, _sa) = result.ok()?;
 
-        if let Ok((sa_memory, _sa)) = result {
-            #[cfg(feature = "verify")]
-            {
-                println!("verifying SA");
-                sa.verify(text);
-            }
+        #[cfg(feature = "verify")]
+        _sa.verify(text);
 
-            // TODO Some(TestResults { sa_time, sa_memory, ..run_lcp(text, sa) })
-            Some(TestResults { sa_time, sa_memory, ..Default::default() })
-        } else {
-            None
-        }
+        // Some(TestResults { sa_time, sa_memory, ..run_lcp(sa) })
+
+        Some(TestResults { sa_time, sa_memory, ..Default::default() })
     }
 
     fn run_lcp<Idx: ArrayIndex>(sa: sa::SuffixArray<u8, Idx>) -> TestResults {
@@ -117,7 +95,7 @@ impl process::Termination for TestResults {
             lcp_kasai_construction_time={} \
             lcp_phi_construction_time={}",
             self.sa_time.as_millis(),
-            self.sa_memory / (1024 * 1024),
+            self.sa_memory / (1 << 20),
             self.lcp_naive_time.as_millis(),
             self.lcp_kasai_time.as_millis(),
             self.lcp_phi_time.as_millis()

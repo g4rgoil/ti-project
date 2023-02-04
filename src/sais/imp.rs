@@ -1,58 +1,91 @@
 use std::iter::zip;
 use std::mem;
 
-use self::marked::{marked_if, Markable};
+use self::marked::Markable;
 use crate::prelude::*;
-use crate::sa::alphabet::{self, *};
+use crate::sa::alphabet::*;
 use crate::sais::bucket::*;
 
 
 pub(super) fn sais_impl<A: Alphabet, Idx: ArrayIndex + Signed>(
     text: &[A::Symbol],
     sa: &mut [Idx],
-    alphabet: A,
     fs: &mut [Idx],
+    alphabet: A,
 ) -> usize {
     if text.is_empty() {
         return 0;
     }
 
-    let mut memory = 2 * alphabet.size() * mem::size_of::<Idx>();
-
-    let hist = &mut vec![zero(); alphabet.size()];
-    for c in text {
-        hist[c.as_()] += one();
-    }
-
-    let mut buckets = (alphabet.size() > fs.len()).then(|| {
+    let mut memory = 0;
+    let mut alloc_buckets = || {
         memory += alphabet.size() * mem::size_of::<Idx>();
         vec![zero(); alphabet.size()]
-    });
-    let (fs, buckets) = match buckets.as_deref_mut() {
-        Some(buckets) => (fs, buckets),
-        None => fs.split_at_mut(fs.len() - alphabet.size()),
     };
 
-    dbg!(fs.len() >= alphabet.size());
+    // A best effort attempt at resuing free space in the suffix array
+    let mut iter = fs.chunks_exact_mut(alphabet.size());
+    let sais_memory = match (iter.next(), iter.next(), iter.next()) {
+        (Some(buckets), Some(lms_buckets), Some(histogram)) => {
+            histogram.fill(zero());
 
-    let lms_buckets = &mut *vec![zero(); alphabet.size()];
-    let mut lms_buckets = Buckets::write(lms_buckets, hist);
+            sais_with_buckets(text, sa, histogram, buckets, lms_buckets)
+        },
+        (Some(buckets), Some(lms_buckets), _) => {
+            let mut histogram = alloc_buckets();
 
-    let num_lms = sort_lms_strs(text, sa, &mut lms_buckets, buckets, hist);
+            sais_with_buckets(text, sa, &mut histogram, buckets, lms_buckets)
+        },
+        (Some(buckets), ..) => {
+            let mut histogram = alloc_buckets();
+            let mut lms_buckets = alloc_buckets();
+
+            sais_with_buckets(text, sa, &mut histogram, buckets, &mut lms_buckets)
+        },
+        _ => {
+            let mut histogram = alloc_buckets();
+            let mut buckets = alloc_buckets();
+            let mut lms_buckets = alloc_buckets();
+
+            sais_with_buckets(text, sa, &mut histogram, &mut buckets, &mut lms_buckets)
+        },
+    };
+    memory + sais_memory
+}
+
+pub(super) fn sais_with_buckets<S: Symbol, Idx: ArrayIndex + Signed>(
+    text: &[S],
+    sa: &mut [Idx],
+    histogram: &mut [Idx],
+    buckets: &mut [Idx],
+    lms_buckets: &mut [Idx],
+) -> usize {
+    for c in text {
+        histogram[c.as_()] += one();
+    }
+
+    let mut lms_buckets = Buckets::write(lms_buckets, histogram);
+    let num_lms = sort_lms_strs(text, sa, &mut lms_buckets, buckets, histogram);
     let (lms, tail) = sa.split_at_mut(num_lms);
 
-    memory += sort_lms_recursive(text, lms, tail);
+    let memory = sort_lms_recursive(text, lms, tail);
     tail.fill(zero());
 
-    induce_final_order(text, sa, lms_buckets, buckets, hist, num_lms);
+    induce_final_order(text, sa, lms_buckets, buckets, histogram, num_lms);
     memory
 }
 
+/// Induce a partial order among LMS suffixes.
+///
+/// Preconditions:
+/// - `histogram` is correctly initialized for `text`
+///
 /// Postconditions:
 /// - `sa` contains all LMS suffixes in the first `num_lms` positions
 /// - The suffixes are sorted by corresponding LMS substring
-fn sort_lms_strs<Idx: ArrayIndex + Signed>(
-    text: &[impl Symbol],
+/// - `lms_buckets` points to the start of LMS buckets
+fn sort_lms_strs<S: Symbol, Idx: ArrayIndex + Signed>(
+    text: &[S],
     sa: &mut [Idx],
     lms_buckets: &mut Buckets<Idx, End>,
     buckets: &mut [Idx],
@@ -62,53 +95,57 @@ fn sort_lms_strs<Idx: ArrayIndex + Signed>(
 
     // Write LMS suffixes in text order at the end of buckets
     for (lms, c) in lms::iter_lms(text) {
-        sa[lms_buckets.take_last(*c).as_()] = Markable::new(lms.to_index());
+        sa[lms_buckets.take(*c).as_()] = Markable::new(lms.to_index());
     }
 
-    let mut begin = Buckets::write(buckets, histogram);
+    let mut begin = Buckets::<_, Begin>::write(buckets, histogram);
 
     // Emulate LMS suffix of guardian element
     if let &[.., lhs, rhs] = text {
-        let dst = begin.take_first(rhs).as_();
-        sa[dst] = marked_if(lhs < rhs, (text.len() - 1).to_index());
+        let dst = begin.take(rhs).as_();
+        sa[dst] = Markable::new((text.len() - 1).to_index()).mark_if(lhs < rhs);
     }
 
-    // Induce suffixes of type L
+    // Induce suffixes of type L. Rightmost L suffixes are kept, all others are zeroed.
     for i in 0..sa.len() {
         let value = sa[i];
 
         if value.is_unmarked_positive() {
             let idx = value.get() - one();
-            let lhs = text[idx.as_().saturating_sub(1)];
             let rhs = text[idx.as_()];
+            let dst = begin.take(rhs);
 
-            sa[begin.take_first(rhs).as_()] = marked_if(lhs < rhs, idx);
+            let lhs = text[idx.as_().saturating_sub(1)];
+            sa[dst.as_()] = Markable::new(idx).mark_if(lhs < rhs);
             sa[i] = zero();
         } else {
             sa[i] = value.inverse();
         }
     }
 
-    // Induce suffixes of type S
-    let mut end = Buckets::write(buckets, histogram);
+    // Induce suffixes of type S. Leftmost S suffixes are marked.
+    let mut end = Buckets::<_, End>::write(buckets, histogram);
     for i in (0..sa.len()).rev() {
         let value = sa[i];
         if value.is_unmarked_positive() {
             let idx = value.get() - one();
-            let lhs = text[idx.as_().saturating_sub(1)];
             let rhs = text[idx.as_()];
+            let dst = end.take(rhs);
 
-            sa[end.take_last(rhs).as_()] = marked_if(lhs > rhs, idx);
+            let lhs = text[idx.as_().saturating_sub(1)];
+            sa[dst.as_()] = Markable::new(idx).mark_if(lhs > rhs);
         }
     }
 
-    // Compact LMS suffixes at front
-    compress(sa, |idx| idx.is_marked_positive().then(|| Markable::new(idx.get())))
+    // Compact LMS suffixes at the front.
+    compress(sa, |i| if i.is_marked_positive() { Some(i.inverse()) } else { None })
 }
 
 
 /// Preconditions:
 /// - `lms` contains LMS suffies sorted by corresponding LMS substring
+/// - `lms.len()` + `tail.len()` = `text.len()`
+/// - `tail.len()` >= text.len() / 2
 ///
 /// Postcondition:
 /// - `lms` contains LMS suffixes sorted lexicographically
@@ -117,6 +154,9 @@ fn sort_lms_recursive<Idx: ArrayIndex + Signed, S: Symbol>(
     lms: &mut [Idx],
     tail: &mut [Idx],
 ) -> usize {
+    debug_assert_eq!(lms.len() + tail.len(), text.len());
+    debug_assert!(lms.len() <= text.len() / 2);
+
     tail.fill(zero());
 
     // store end of LMS substrings
@@ -125,7 +165,6 @@ fn sort_lms_recursive<Idx: ArrayIndex + Signed, S: Symbol>(
         lms_begin + 1
     });
 
-    // TODO could be more efficient here
     // Assign names to LMS substrings
     let (size, _) = lms.iter().fold((zero(), &[][..]), |(name, prev), begin| {
         let end = tail[begin.as_() / 2];
@@ -142,22 +181,23 @@ fn sort_lms_recursive<Idx: ArrayIndex + Signed, S: Symbol>(
         let alphabet = IndexAlphabet::<Idx>::new(size.as_());
 
         lms.fill(zero());
-        let memory = sais_impl::<_, Idx>(lms_text, lms, alphabet, tail);
+        let memory = sais_impl::<_, Idx>(lms_text, lms, tail, alphabet);
 
-        for ((lms_begin, _), dst) in lms::iter_lms(text).zip(lms_text.iter_mut().rev()) {
-            *dst = lms_begin.to_index();
+        for ((suffix, _), dst) in lms::iter_lms(text).zip(lms_text.iter_mut().rev()) {
+            *dst = suffix.to_index();
         }
 
         for dst in lms.iter_mut() {
             *dst = lms_text[dst.as_()];
         }
-
         memory
     } else {
         0
     }
 }
 
+/// Uses the sorted LMS suffixes to induce the suffix array
+///
 /// Preconditions:
 /// - `sa` contains sorted LMS suffixes in first `num_lms` positions
 /// - `lms_buckets` points to the beginning of LMS buckets
@@ -172,12 +212,12 @@ fn induce_final_order<Idx: ArrayIndex + Signed>(
     histogram: &[Idx],
     num_lms: usize,
 ) {
-    let mut begin = Buckets::write(buckets, histogram);
+    let mut begin = Buckets::<_, Begin>::write(buckets, histogram);
+    let lms_begin = lms_buckets.inner.iter();
+    let lms_end = begin.inner.iter().skip(1);
 
-    let lms_begin = lms_buckets.iter();
-    let lms_end = begin.iter().skip(1);
-
-    // Place LMS suffixes at end of buckets
+    // Place LMS suffixes at end of buckets. Use the fact that `lms_begin`
+    // points to front of LMS buckets and `lms_end` to ends.
     zip(lms_begin, lms_end).rev().fold(num_lms, |mut src, (fst, lst)| {
         for dst in (fst.as_()..lst.as_()).rev() {
             src -= 1;
@@ -190,8 +230,8 @@ fn induce_final_order<Idx: ArrayIndex + Signed>(
 
     // Emulate LMS suffix of guardian element
     if let &[.., lhs, rhs] = text {
-        let dst = begin.take_first(rhs).as_();
-        sa[dst] = marked_if(lhs < rhs, (text.len() - 1).to_index());
+        let dst = begin.take(rhs).as_();
+        sa[dst] = Markable::new((text.len() - 1).to_index()).mark_if(lhs < rhs);
     }
 
     // Induce suffixes of type L
@@ -201,32 +241,36 @@ fn induce_final_order<Idx: ArrayIndex + Signed>(
 
         if value.is_unmarked_positive() {
             let idx = value.get() - one();
-            let lhs = text[idx.as_().saturating_sub(1)];
             let rhs = text[idx.as_()];
+            let dst = begin.take(rhs);
 
-            sa[begin.take_first(rhs).as_()] = marked_if(lhs < rhs, idx);
+            // Mark end of L bucket
+            let lhs = text[idx.as_().saturating_sub(1)];
+            sa[dst.as_()] = Markable::new(idx).mark_if(lhs < rhs);
         }
     }
 
     // Induce suffixes of type S
-    let mut end = Buckets::write(buckets, histogram);
+    let mut end = Buckets::<_, End>::write(buckets, histogram);
     for i in (0..sa.len()).rev() {
         let value = sa[i];
 
+        // Remove marks to the right of the cursor
+        sa[i] = Markable::new(value.get());
         if value.is_unmarked_positive() {
             let idx = value.get() - one();
-            let lhs = text[idx.as_().saturating_sub(1)];
             let rhs = text[idx.as_()];
+            let dst = end.take(rhs);
 
-            sa[end.take_last(rhs).as_()] = marked_if(lhs > rhs, idx);
-        } else {
-            sa[i] = Markable::new(value.get());
+            // Mark end of S bucket
+            let lhs = text[idx.as_().saturating_sub(1)];
+            sa[dst.as_()] = Markable::new(idx).mark_if(lhs > rhs);
         }
     }
 }
 
-/// Calls `f` on every element of `slice` and moves those that return
-/// [`Option::Some`] to the front of `slice`.
+/// Calls `f` on every element of `slice`. If the function returns
+/// [`Option::Some`] writes the value to the front of the slice.
 fn compress<T>(slice: &mut [T], mut f: impl FnMut(&T) -> Option<T>) -> usize {
     (0..slice.len()).fold(0, |i, j| match f(&slice[j]) {
         Some(value) => {
@@ -241,11 +285,8 @@ fn compress<T>(slice: &mut [T], mut f: impl FnMut(&T) -> Option<T>) -> usize {
 mod marked {
     use crate::prelude::*;
 
-    pub fn marked_if<T: ArrayIndex + Signed>(pred: bool, value: T) -> Markable<T> {
-        debug_assert!(!value.is_negative());
-        Markable(value | ((pred as usize) << (T::BITS - 1)).to_index())
-    }
-
+    /// A wrapper around signed integers which uses the sign bit to distinguish
+    /// between _marked_ and _unmarked_ values.
     #[derive(Clone, Copy, PartialEq, Eq)]
     #[repr(transparent)]
     pub struct Markable<T>(T);
@@ -258,11 +299,16 @@ mod marked {
         const ZERO: Self = Self(T::ZERO);
     }
 
+    #[allow(unused)]
     impl<T: ArrayIndex + Signed> Markable<T> {
         pub fn new(value: T) -> Self {
             debug_assert!(!value.is_negative());
             Self(value)
         }
+
+        pub fn is_marked(&self) -> bool { self.0.is_negative() }
+
+        pub fn is_unmarked(&self) -> bool { !self.0.is_negative() }
 
         pub fn is_marked_positive(&self) -> bool { self.inverse().0.is_positive() }
 
@@ -271,6 +317,10 @@ mod marked {
         pub fn get(&self) -> T { self.0 & T::MAX }
 
         pub fn inverse(&self) -> Self { Self(self.0 ^ T::MIN) }
+
+        pub fn mark_if(&self, pred: bool) -> Self {
+            Self(self.0 | ((pred as usize) << (T::BITS - 1)).to_index())
+        }
     }
 
     impl<T> Markable<T> {
@@ -299,13 +349,13 @@ mod lms {
         #[inline(always)]
         fn next(&mut self) -> Option<Self::Item> {
             if let Some(ref mut prev) = self.prev {
-                while let Some((_, value)) = self.iter.next() {
-                    if value < mem::replace(prev, value) {
+                for (_, next) in self.iter.by_ref() {
+                    if next < mem::replace(prev, next) {
                         break;
                     }
                 }
 
-                while let Some((i, next)) = self.iter.next() {
+                for (i, next) in self.iter.by_ref() {
                     if next > *prev {
                         return Some((i + 1, mem::replace(prev, next)));
                     }
@@ -338,7 +388,7 @@ mod test {
     fn sais<Idx: ArrayIndex + Signed>(text: &[u8]) -> Box<[Idx]> {
         let mut sa = vec![Idx::ZERO; text.len()].into_boxed_slice();
         let alphabet = sa::alphabet::ByteAlphabet;
-        let _ = sais::imp::sais_impl::<_, Idx>(text, &mut sa, alphabet, &mut []);
+        let _ = sais::imp::sais_impl::<_, Idx>(text, &mut sa, &mut [], alphabet);
         sa
     }
 

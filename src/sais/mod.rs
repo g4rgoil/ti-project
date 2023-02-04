@@ -3,6 +3,7 @@ mod imp;
 
 use crate::cast::Transmutable;
 use crate::prelude::*;
+use crate::sa::alphabet::ByteAlphabet;
 
 pub fn sais<Idx>(text: &[u8]) -> sa::SAResult<u8, Idx>
 where
@@ -14,8 +15,7 @@ where
         let mut memory = len * std::mem::size_of::<Idx>();
         let mut sa = vec![zero(); len].into_boxed_slice();
 
-        let alphabet = sa::alphabet::ByteAlphabet;
-        memory += imp::sais_impl::<_, Idx::Signed>(text, &mut sa, alphabet, &mut []);
+        memory += imp::sais_impl::<_, Idx::Signed>(text, &mut sa, &mut [], ByteAlphabet);
 
         debug_assert!(sa.iter().all(|i| !i.is_negative()));
 
@@ -55,7 +55,6 @@ mod test {
                 let expected: &[$index] = $expected;
                 let result = $crate::sais::sais::<$index>($text);
                 let sa = result.as_ref().map(|sa| sa.1.inner());
-
                 assert_eq!(sa, Ok(expected));
             })*
         };
@@ -114,7 +113,6 @@ mod test {
         let text = &[0_u8; i8::MAX as usize];
         let expected: Box<[_]> = (0..i8::MAX as u8).rev().collect();
         let sa = super::sais::<u8>(text).unwrap().1;
-
         assert_eq!(sa.inner(), &*expected);
     }
 
@@ -123,7 +121,6 @@ mod test {
         let text = &[0_u8; i8::MAX as usize];
         let expected: Box<[_]> = (0..i8::MAX).rev().collect();
         let sa = super::sais::<i8>(text).unwrap().1;
-
         assert_eq!(sa.inner(), &*expected);
     }
 
@@ -132,7 +129,6 @@ mod test {
         let text = &[0_u8; i16::MAX as usize];
         let expected: Box<[_]> = (0..i16::MAX as u16).rev().collect();
         let sa = super::sais::<u16>(text).unwrap().1;
-
         assert_eq!(sa.inner(), &*expected);
     }
 
@@ -141,7 +137,6 @@ mod test {
         let text = &[0_u8; i16::MAX as usize];
         let expected: Box<[_]> = (0..i16::MAX).rev().collect();
         let sa = super::sais::<i16>(text).unwrap().1;
-
         assert_eq!(sa.inner(), &*expected);
     }
 
