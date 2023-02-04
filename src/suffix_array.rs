@@ -1,11 +1,21 @@
-mod sais;
-
 use std::fmt::{self, Debug};
 use std::iter::zip;
 
 use self::result::MemoryResult;
-use crate::index::{ArrayIndex, ToIndex};
+use crate::num::{ArrayIndex, AsPrimitive, Limits, ToIndex, Zero};
+use crate::sais;
+use crate::sais::index::SignedIndex;
 use crate::text::Text;
+
+pub type Result<'txt, T, Idx> =
+    std::result::Result<MemoryResult<SuffixArray<'txt, T, Idx>>, Error>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Error {
+    /// The text of size `len` does not fit the specified index type with
+    /// capacity `cap`.
+    IndexTooSmall { len: usize, cap: usize },
+}
 
 /// Computes the suffix array for `text` using the naive algorithm.
 ///
@@ -14,19 +24,29 @@ use crate::text::Text;
 /// performance of the algorithm is _O(n² * log(n))_.
 ///
 /// [`sort_by_key`]: slice::sort_by_key
-pub fn naive<T: Ord + Debug, Idx: ArrayIndex>(text: &Text<T>) -> SuffixArray<T, Idx> {
-    assert!(text.fits_index::<Idx>());
+pub fn naive<T: Symbol, Idx: ArrayIndex>(text: &Text<T>) -> Result<T, Idx> {
+    // TODO put this into its own function
+    if text.len().saturating_sub(1) <= Idx::MAX.as_() {
+        let mut sa: Box<_> = (0..text.len()).map(Idx::from_usize).collect();
+        sa.sort_unstable_by_key(|i| &text[*i..]);
 
-    let mut sa: Box<_> = (0..text.len()).map(Idx::from_usize).collect();
-    sa.sort_unstable_by_key(|i| &text[*i..]);
-
-    SuffixArray { text, sa }
+        // TODO don't count suffix array?!
+        let mut builder = MemoryResult::builder();
+        builder.add_values::<T>(text.len());
+        Ok(builder.build(SuffixArray { text, sa }))
+    } else {
+        let (len, cap) = (text.len(), Idx::MAX.as_().saturating_add(1));
+        Err(Error::IndexTooSmall { len, cap })
+    }
 }
 
 /// Computes the suffix array for `text` using Suffix-Array-Induced-Sorting (SAIS).
 ///
 /// TODO
-pub fn sais<Idx: ArrayIndex>(text: &Text<u8>) -> MemoryResult<SuffixArray<u8, Idx>> {
+pub fn sais<Idx: sais::index::Index>(text: &Text<u8>) -> Result<u8, Idx>
+where
+    Idx::Signed: SignedIndex,
+{
     sais::sais(text)
 }
 
@@ -48,6 +68,11 @@ pub struct SuffixArray<'txt, T, Idx> {
 }
 
 impl<'txt, T, Idx> SuffixArray<'txt, T, Idx> {
+    pub unsafe fn new_unchecked(text: &'txt Text<T>, sa: Box<[Idx]>) -> Self {
+        // TODO debug asserts?
+        Self { text, sa }
+    }
+
     /// Returns a reference to the original text.
     pub fn text(&self) -> &'txt Text<T> { self.text }
 
@@ -152,6 +177,23 @@ impl<'sa, 'txt, T: fmt::Debug, Idx: fmt::Debug> fmt::Debug
             .finish()
     }
 }
+
+// TODO actually use this trait for sa impls
+// TODO what about signed types?
+pub trait Symbol:
+    Sized + Copy + Ord + Debug + Zero + Limits + AsPrimitive<usize>
+{
+}
+
+#[doc(hidden)]
+macro_rules! impl_symbol {
+    ( $( $type:ty ),* ) => {
+        $( impl Symbol for $type {} )*
+    };
+}
+
+impl_symbol!(u8, u16, u32, u64, usize);
+
 
 pub mod result {
     #[derive(Debug, Clone, Copy)]
