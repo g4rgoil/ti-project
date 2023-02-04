@@ -1,3 +1,5 @@
+//! Types and functionality for the construction of suffix arrays.
+
 use std::fmt;
 use std::iter::zip;
 

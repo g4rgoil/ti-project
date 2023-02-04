@@ -1,4 +1,4 @@
-//! Implements a number of algorithms for LCP array construction.
+//! Types and functionality for the construction of LCP arrays.
 
 use std::fmt;
 use std::iter::zip;

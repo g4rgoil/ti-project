@@ -1,6 +1,6 @@
 //! A number of traits to allow for generic numeric types and arithmetic.
 //!
-//! This module is strongly inspired by the `num_traits` crate and strongly
+//! This module is strongly inspired by the [`num_traits`](https://docs.rs/num-traits/latest/num_traits/) crate and strongly
 //! mirrors its structure.
 
 use std::{fmt, ops};

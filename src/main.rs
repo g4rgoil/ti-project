@@ -10,7 +10,7 @@ pub mod prelude {
     pub use crate::suffix_array as sa;
 }
 
-use std::process::{self, ExitCode};
+use std::process::{ExitCode, Termination};
 use std::time::{Duration, Instant};
 use std::{env, fs, hint, io};
 
@@ -32,7 +32,7 @@ pub fn main() -> Result<TestResults, String> {
             .or_else(|| try_run_sa::<u64>(text))
             .or_else(|| try_run_sa::<usize>(text))
             .ok_or_else(|| {
-                format!("cannot find index size for text of length {}", text.len())
+                format!("cannot find index type for text of length {}", text.len())
             })
     }
 
@@ -82,10 +82,9 @@ pub struct TestResults {
     lcp_phi_time: Duration,
 }
 
-impl process::Termination for TestResults {
-    fn report(self) -> process::ExitCode {
+impl Termination for TestResults {
+    fn report(self) -> ExitCode {
         use io::Write;
-
         let _ = writeln!(
             io::stderr(),
             "RESULT name=Pascal\tMehnert \
@@ -141,10 +140,12 @@ pub mod cast {
     /// to cast between slices of type `A` and `B`. The property must be
     /// commutative, i.e. `B` must also be transmutable to `A`.
     ///
-    /// In this crate, the trait is used to convert between slices of signed and
-    /// unsigned integers of equal size, e.g. &[u32] as &[i32].
+    /// In this project, the trait is used to convert between slices of signed
+    /// signed unsigned integers of equal size, e.g. &[u32] as &[i32].
     ///
-    /// Note that incorrect implementations of this trait may lead to UB.
+    /// # Safety
+    ///
+    /// Incorrect implementations of this trait may lead to undefined behaviour.
     /// Therefore the trait, and implementations thereof are marked as unsafe.
     pub unsafe trait Transmutable<T>: Sized {}
 

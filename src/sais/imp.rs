@@ -64,7 +64,7 @@ pub(super) fn sais_with_buckets<S: Symbol, Idx: ArrayIndex + Signed>(
         histogram[c.as_()] += one();
     }
 
-    let mut lms_buckets = Buckets::write(lms_buckets, histogram);
+    let mut lms_buckets = Buckets::new(lms_buckets, histogram);
     let num_lms = sort_lms_strs(text, sa, &mut lms_buckets, buckets, histogram);
     let (lms, tail) = sa.split_at_mut(num_lms);
 
@@ -98,25 +98,24 @@ fn sort_lms_strs<S: Symbol, Idx: ArrayIndex + Signed>(
         sa[lms_buckets.take(*c).as_()] = Markable::new(lms.to_index());
     }
 
-    let mut begin = Buckets::<_, Begin>::write(buckets, histogram);
+    let mut begin = Buckets::<_, Begin>::new(buckets, histogram);
 
     // Emulate LMS suffix of guardian element
     if let &[.., lhs, rhs] = text {
         let dst = begin.take(rhs).as_();
-        sa[dst] = Markable::new((text.len() - 1).to_index()).mark_if(lhs < rhs);
+        sa[dst] = Markable::new((text.len() - 1).to_index()).marked_if(lhs < rhs);
     }
 
     // Induce suffixes of type L. Rightmost L suffixes are kept, all others are zeroed.
     for i in 0..sa.len() {
         let value = sa[i];
-
         if value.is_unmarked_positive() {
             let idx = value.get() - one();
             let rhs = text[idx.as_()];
             let dst = begin.take(rhs);
 
             let lhs = text[idx.as_().saturating_sub(1)];
-            sa[dst.as_()] = Markable::new(idx).mark_if(lhs < rhs);
+            sa[dst.as_()] = Markable::new(idx).marked_if(lhs < rhs);
             sa[i] = zero();
         } else {
             sa[i] = value.inverse();
@@ -124,7 +123,7 @@ fn sort_lms_strs<S: Symbol, Idx: ArrayIndex + Signed>(
     }
 
     // Induce suffixes of type S. Leftmost S suffixes are marked.
-    let mut end = Buckets::<_, End>::write(buckets, histogram);
+    let mut end = Buckets::<_, End>::new(buckets, histogram);
     for i in (0..sa.len()).rev() {
         let value = sa[i];
         if value.is_unmarked_positive() {
@@ -133,7 +132,7 @@ fn sort_lms_strs<S: Symbol, Idx: ArrayIndex + Signed>(
             let dst = end.take(rhs);
 
             let lhs = text[idx.as_().saturating_sub(1)];
-            sa[dst.as_()] = Markable::new(idx).mark_if(lhs > rhs);
+            sa[dst.as_()] = Markable::new(idx).marked_if(lhs > rhs);
         }
     }
 
@@ -196,13 +195,13 @@ fn sort_lms_recursive<Idx: ArrayIndex + Signed, S: Symbol>(
     }
 }
 
-/// Uses the sorted LMS suffixes to induce the suffix array
+/// Use the sorted LMS suffixes to induce the suffix array
 ///
-/// Preconditions:
+/// # Preconditions
 /// - `sa` contains sorted LMS suffixes in first `num_lms` positions
 /// - `lms_buckets` points to the beginning of LMS buckets
 ///
-/// Postcondition:
+/// # Postcondition
 /// - `sa` contains the suffix array for `text`
 fn induce_final_order<Idx: ArrayIndex + Signed>(
     text: &[impl Symbol],
@@ -212,7 +211,7 @@ fn induce_final_order<Idx: ArrayIndex + Signed>(
     histogram: &[Idx],
     num_lms: usize,
 ) {
-    let mut begin = Buckets::<_, Begin>::write(buckets, histogram);
+    let mut begin = Buckets::<_, Begin>::new(buckets, histogram);
     let lms_begin = lms_buckets.inner.iter();
     let lms_end = begin.inner.iter().skip(1);
 
@@ -231,40 +230,41 @@ fn induce_final_order<Idx: ArrayIndex + Signed>(
     // Emulate LMS suffix of guardian element
     if let &[.., lhs, rhs] = text {
         let dst = begin.take(rhs).as_();
-        sa[dst] = Markable::new((text.len() - 1).to_index()).mark_if(lhs < rhs);
+        sa[dst] = Markable::new((text.len() - 1).to_index()).marked_if(lhs < rhs);
     }
 
     // Induce suffixes of type L
     for i in 0..sa.len() {
         let value = sa[i];
-        sa[i] = value.inverse();
 
+        // To the right of the cursor only leftmost L suffixes are unmarked
+        sa[i] = value.inverse();
         if value.is_unmarked_positive() {
             let idx = value.get() - one();
             let rhs = text[idx.as_()];
             let dst = begin.take(rhs);
 
-            // Mark end of L bucket
+            // Mark end of L bucket (=> `idx-1` is not an L suffix)
             let lhs = text[idx.as_().saturating_sub(1)];
-            sa[dst.as_()] = Markable::new(idx).mark_if(lhs < rhs);
+            sa[dst.as_()] = Markable::new(idx).marked_if(lhs < rhs);
         }
     }
 
     // Induce suffixes of type S
-    let mut end = Buckets::<_, End>::write(buckets, histogram);
+    let mut end = Buckets::<_, End>::new(buckets, histogram);
     for i in (0..sa.len()).rev() {
         let value = sa[i];
 
         // Remove marks to the right of the cursor
-        sa[i] = Markable::new(value.get());
+        sa[i] = value.unmarked();
         if value.is_unmarked_positive() {
             let idx = value.get() - one();
             let rhs = text[idx.as_()];
             let dst = end.take(rhs);
 
-            // Mark end of S bucket
+            // Mark end of S bucket (=> `idx-1` is not an S suffix)
             let lhs = text[idx.as_().saturating_sub(1)];
-            sa[dst.as_()] = Markable::new(idx).mark_if(lhs > rhs);
+            sa[dst.as_()] = Markable::new(idx).marked_if(lhs > rhs);
         }
     }
 }
@@ -301,29 +301,44 @@ mod marked {
 
     #[allow(unused)]
     impl<T: ArrayIndex + Signed> Markable<T> {
+        /// Return an unmarked `Markable` with the given `value`.
         pub fn new(value: T) -> Self {
             debug_assert!(!value.is_negative());
             Self(value)
         }
 
+        /// Return `true` iff `self` is marked.
         pub fn is_marked(&self) -> bool { self.0.is_negative() }
 
+        /// Return `true` iff `self` is unmarked.
         pub fn is_unmarked(&self) -> bool { !self.0.is_negative() }
 
+        /// Return `true` iff `self` is marked and its value is positive.
         pub fn is_marked_positive(&self) -> bool { self.inverse().0.is_positive() }
 
+        /// Return `true` iff `self` is unmarked and its value is positive.
         pub fn is_unmarked_positive(&self) -> bool { self.0.is_positive() }
 
+        /// Return the `value` of `self`.
         pub fn get(&self) -> T { self.0 & T::MAX }
 
+        /// Return a marked `Markable` with the same value as `self`.
+        pub fn marked(&self) -> Self { Self(self.0 | T::MIN) }
+
+        /// Return an unmarked `Markable` with the same value as `self`.
+        pub fn unmarked(&self) -> Self { Self(self.get()) }
+
+        /// Return a `Markable` which is marked iff `self` is unmarked.
         pub fn inverse(&self) -> Self { Self(self.0 ^ T::MIN) }
 
-        pub fn mark_if(&self, pred: bool) -> Self {
+        /// Return a `Markable` which is marked iff `pred` is `true`.
+        pub fn marked_if(&self, pred: bool) -> Self {
             Self(self.0 | ((pred as usize) << (T::BITS - 1)).to_index())
         }
     }
 
     impl<T> Markable<T> {
+        /// Safely cast a slice of `T`s to a slice of `Markable<T>`.
         pub fn cast_mut_slice(slice: &mut [T]) -> &mut [Self] {
             // Safety: `Markable<T>` has the same layout as `T`.
             unsafe { &mut *(slice as *mut _ as *mut _) }
@@ -338,6 +353,8 @@ mod lms {
         LMSIter { iter: text.iter().enumerate().rev(), prev: text.last() }
     }
 
+    /// An iterator over the LMS suffixes of a text. Note that the implemenation
+    /// always iterates back to front. This `struct` is created by [`iter_lms`].
     pub struct LMSIter<'a, T> {
         iter: iter::Rev<iter::Enumerate<slice::Iter<'a, T>>>,
         prev: Option<&'a T>,
@@ -365,6 +382,8 @@ mod lms {
             }
             None
         }
+
+        fn size_hint(&self) -> (usize, Option<usize>) { (0, Some(self.iter.len() / 2)) }
     }
 }
 
