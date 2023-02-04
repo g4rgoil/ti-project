@@ -9,14 +9,14 @@ use crate::num::one;
 use crate::num::zero;
 use crate::num::{ArrayIndex, AsPrimitive};
 use crate::sa::alphabet::Alphabet;
-use crate::text::Text;
+
 
 fn buckets<Idx: ArrayIndex>(alphabet: impl Alphabet) -> Box<[Idx]> {
     vec![zero(); alphabet.size()].into_boxed_slice()
 }
 
 pub(super) fn histogram<A: Alphabet, Idx: ArrayIndex>(
-    text: &Text<A::Symbol>,
+    text: &[A::Symbol],
     alphabet: A,
 ) -> Box<[Idx]> {
     let mut histogram = buckets::<Idx>(alphabet);

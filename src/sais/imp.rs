@@ -9,10 +9,10 @@ use crate::num::*;
 use crate::sa::alphabet::{Alphabet, IndexAlphabet, Symbol};
 use crate::sais::bucket::kind::{Begin, BucketExt, End};
 use crate::sais::bucket::*;
-use crate::text::Text;
+
 
 pub(super) fn sais_impl<A: Alphabet, Idx: SignedIndex>(
-    text: &Text<A::Symbol>,
+    text: &[A::Symbol],
     sa: &mut [Idx],
     alphabet: A,
 ) -> usize {
@@ -40,7 +40,7 @@ pub(super) fn sais_impl<A: Alphabet, Idx: SignedIndex>(
 
 #[inline(always)]
 fn sort_lms_strs<A: Alphabet, Idx: SignedIndex>(
-    text: &Text<A::Symbol>,
+    text: &[A::Symbol],
     sa: &mut [Idx],
     lms_buckets: &mut Buckets<A, Idx, End>,
     begin: &mut Buckets<A, Idx, Begin>,
@@ -55,7 +55,7 @@ fn sort_lms_strs<A: Alphabet, Idx: SignedIndex>(
     }
 
     // Emulate LMS suffix of guardian element
-    if let &[.., lhs, rhs] = &text.0 {
+    if let &[.., lhs, rhs] = text {
         let dst = begin.take_first(rhs).as_();
         sa[dst] = marked_if(lhs < rhs, (text.len() - 1).to_index());
     }
@@ -95,7 +95,7 @@ fn sort_lms_strs<A: Alphabet, Idx: SignedIndex>(
 }
 
 fn sort_lms_recursive<Idx: SignedIndex, S: Symbol>(
-    text: &Text<S>,
+    text: &[S],
     lms: &mut [Idx],
     tail: &mut [Idx],
 ) -> usize {
@@ -109,7 +109,7 @@ fn sort_lms_recursive<Idx: SignedIndex, S: Symbol>(
 
     // TODO could be more efficient here
     // Assign names to LMS substrings
-    let (size, _) = lms.iter().fold((zero(), (&[]).into()), |(name, prev), begin| {
+    let (size, _) = lms.iter().fold((zero(), &[][..]), |(name, prev), begin| {
         let end = tail[begin.as_() / 2];
         let curr = &text[begin.as_()..end.as_()];
         let name = if prev == curr { name } else { name + one() };
@@ -124,7 +124,7 @@ fn sort_lms_recursive<Idx: SignedIndex, S: Symbol>(
         let alphabet = IndexAlphabet::<Idx>::new(size.as_());
 
         lms.fill(zero());
-        let memory = sais_impl::<_, Idx>(Text::from_slice(lms_text), lms, alphabet);
+        let memory = sais_impl::<_, Idx>(lms_text, lms, alphabet);
 
         for (lms_begin, dst) in zip(iter_lms(text), lms_text.iter_mut().rev()) {
             *dst = lms_begin.to_index();
@@ -150,7 +150,7 @@ fn sort_lms_recursive<Idx: SignedIndex, S: Symbol>(
 /// - `sa` contains the suffix array for `text`
 #[inline(always)]
 fn induce_final_order<A: Alphabet, Idx: SignedIndex>(
-    text: &Text<A::Symbol>,
+    text: &[A::Symbol],
     sa: &mut [Idx],
     lms_buckets: Buckets<A, Idx, End>,
     mut begin: Buckets<A, Idx, Begin>,
@@ -172,7 +172,7 @@ fn induce_final_order<A: Alphabet, Idx: SignedIndex>(
     let sa = Markable::cast_mut_slice(sa);
 
     // Emulate LMS suffix of guardian element
-    if let &[.., lhs, rhs] = &text.0 {
+    if let &[.., lhs, rhs] = text {
         let dst = begin.take_first(rhs);
         sa[dst.as_()] = marked_if(lhs < rhs, (text.len() - 1).to_index());
     }
@@ -297,10 +297,10 @@ mod lms {
     use std::iter::{Enumerate, Peekable, Rev};
     use std::slice;
 
+    use crate::sa;
     use crate::sa::alphabet::Symbol;
-    use crate::{sa, text::Text};
 
-    pub fn iter_lms<S>(text: &Text<S>) -> LMSIter<S> {
+    pub fn iter_lms<S>(text: &[S]) -> LMSIter<S> {
         LMSIter { text: text.iter().enumerate().rev().peekable(), decreasing: false }
     }
 
@@ -335,7 +335,7 @@ mod lms {
 
 #[cfg(test)]
 mod test {
-    use crate::{num::*, sa, sais::*, text::Text};
+    use crate::{num::*, sa, sais::*};
 
     const LOREM_IPSUM_LONG: &[u8] = b"Lorem ipsum dolor sit amet, officia \
         excepteur ex fugiat reprehenderit enim labore culpa sint ad nisi Lorem \
@@ -350,7 +350,6 @@ mod test {
         cupidatat ullamco ut ea consectetur et est culpa et culpa duis.";
 
     fn sais<Idx: SignedIndex>(text: &[u8]) -> Box<[Idx]> {
-        let text = Text::from_slice(text);
         let mut sa = vec![Idx::ZERO; text.len()].into_boxed_slice();
         let alphabet = sa::alphabet::ByteAlphabet;
         let _ = imp::sais_impl::<_, Idx>(text, &mut sa, alphabet);
@@ -428,7 +427,7 @@ mod test {
         let text = b"Lorem ipsum dolor sit amet, qui minim labore adipisicing \
                    minim sint cillum sint consectetur cupidatat.";
         let sa = sais::<isize>(text);
-        let expected = sa::naive(text.into()).unwrap().1.into_inner();
+        let expected = sa::naive(text).unwrap().1.into_inner();
         assert_eq!(*sa, *expected);
     }
 
@@ -449,7 +448,7 @@ mod test {
     fn test_sais_dna() {
         let text = b"CAACAACAAAT";
         let sa = sais::<isize>(text);
-        let expected = sa::naive(text.into()).unwrap().1.into_inner();
+        let expected = sa::naive(text).unwrap().1.into_inner();
         assert_eq!(*sa, *expected);
     }
 
@@ -457,7 +456,7 @@ mod test {
     fn test_sais_dna_2() {
         let text = b"TGTGGGACTGTGGAG";
         let sa = sais::<isize>(text);
-        let expected = sa::naive(text.into()).unwrap().1.into_inner();
+        let expected = sa::naive(text).unwrap().1.into_inner();
         assert_eq!(*sa, *expected);
     }
 
@@ -465,7 +464,7 @@ mod test {
     fn test_sais_i8_maximum() {
         let text = &[0; 127];
         let sa = sais::<i8>(text);
-        let expected = sa::naive::<_, i8>(text.into()).unwrap().1.into_inner();
+        let expected = sa::naive::<_, i8>(text).unwrap().1.into_inner();
         assert_eq!(*sa, *expected);
     }
 }

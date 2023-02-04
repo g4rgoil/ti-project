@@ -10,7 +10,6 @@ pub mod lcp_array;
 pub mod num;
 pub mod sais;
 pub mod suffix_array;
-pub mod text;
 
 use std::process::{self, ExitCode};
 use std::time::{Duration, Instant};
@@ -22,7 +21,7 @@ use suffix_array as sa;
 
 use crate::sa::SuffixArray;
 use crate::sais::index::SignedIndex;
-use crate::text::Text;
+
 
 pub fn main() -> Result<TestResults, String> {
     #[inline(never)]
@@ -33,7 +32,7 @@ pub fn main() -> Result<TestResults, String> {
         (result, elapsed)
     }
 
-    fn run(text: &Text<u8>) -> Result<TestResults, String> {
+    fn run(text: &[u8]) -> Result<TestResults, String> {
         None.or_else(|| try_run_sa::<u32>(text))
             .or_else(|| try_run_sa::<u64>(text))
             .or_else(|| try_run_sa::<usize>(text))
@@ -42,7 +41,7 @@ pub fn main() -> Result<TestResults, String> {
             })
     }
 
-    fn try_run_sa<Idx: sais::index::Index>(text: &Text<u8>) -> Option<TestResults>
+    fn try_run_sa<Idx: sais::index::Index>(text: &[u8]) -> Option<TestResults>
     where
         Idx::Signed: SignedIndex,
     {
@@ -73,10 +72,7 @@ pub fn main() -> Result<TestResults, String> {
         }
     }
 
-    fn run_lcp<Idx: ArrayIndex>(
-        text: &Text<u8>,
-        sa: SuffixArray<u8, Idx>,
-    ) -> TestResults {
+    fn run_lcp<Idx: ArrayIndex>(text: &[u8], sa: SuffixArray<u8, Idx>) -> TestResults {
         // let (_lcp_naive, lcp_naive_time) = run_timed(|| lcp::naive(&sa));
         // let (_lcp_kasai, lcp_kasai_time) = run_timed(|| lcp::kasai(&sa.inverse()));
         // let (_lcp_phi, lcp_phi_time) = run_timed(|| lcp::phi(&sa));
@@ -95,7 +91,7 @@ pub fn main() -> Result<TestResults, String> {
     let param = env::args().nth(1);
     let input_path = param.ok_or_else(|| "expected exactly 1 argument".to_owned())?;
     let input_file = fs::read(input_path).map_err(|e| e.to_string())?;
-    run(Text::from_slice(&input_file))
+    run(&input_file)
 }
 
 #[derive(Debug, Clone, Copy, Default)]

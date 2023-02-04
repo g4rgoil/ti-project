@@ -2,9 +2,9 @@ mod bucket;
 mod imp;
 
 use self::index::{Index, SignedIndex};
-use crate::{num::*, sa, text::Text};
+use crate::{num::*, sa};
 
-pub(super) fn sais<Idx: Index>(text: &Text<u8>) -> sa::SAResult<u8, Idx>
+pub(super) fn sais<Idx: Index>(text: &[u8]) -> sa::SAResult<u8, Idx>
 where
     Idx::Signed: SignedIndex, // TODO this is bad
 {
@@ -68,7 +68,7 @@ pub mod index {
 
 #[cfg(test)]
 mod test {
-    use crate::{num::*, sa, text::Text};
+    use crate::{num::*, sa};
 
     const LOREM_IPSUM_LONG: &[u8] = b"Lorem ipsum dolor sit amet, officia \
         excepteur ex fugiat reprehenderit enim labore culpa sint ad nisi Lorem \
@@ -85,9 +85,8 @@ mod test {
     macro_rules! assert_sais_eq {
         ($text:expr, $expected:expr, for $($index:ty),* $(,)?) => {
             $({
-                let text = $crate::text::Text::from_slice($text);
                 let expected: &[$index] = $expected;
-                let result = $crate::sais::sais::<$index>(text);
+                let result = $crate::sais::sais::<$index>($text);
                 let sa = result.as_ref().map(|sa| sa.1.inner());
 
                 assert_eq!(sa, Ok(expected));
@@ -128,7 +127,7 @@ mod test {
                    minim sint cillum sint consectetur cupidatat.";
         assert_sais_eq!(
             text,
-            &sa::naive(text.into()).unwrap().1.into_inner(),
+            &sa::naive(text).unwrap().1.into_inner(),
             for u8, i8, u16, i16, u32, i32, u64, i64, usize, isize
         );
     }
@@ -138,7 +137,7 @@ mod test {
         let text = LOREM_IPSUM_LONG;
         assert_sais_eq!(
             text,
-            &sa::naive(text.into()).unwrap().1.into_inner(),
+            &sa::naive(text).unwrap().1.into_inner(),
             for u16, i16, u32, i32, u64, i64, usize, isize
         );
     }
@@ -147,7 +146,7 @@ mod test {
     fn test_sais_index_limits_u8() {
         let text = &[0_u8; i8::MAX as usize];
         let expected: Box<[_]> = (0..i8::MAX as u8).rev().collect();
-        let sa = super::sais::<u8>(text.into()).unwrap().1;
+        let sa = super::sais::<u8>(text).unwrap().1;
 
         assert_eq!(sa.inner(), &*expected);
     }
@@ -156,7 +155,7 @@ mod test {
     fn test_sais_index_limits_i8() {
         let text = &[0_u8; i8::MAX as usize];
         let expected: Box<[_]> = (0..i8::MAX).rev().collect();
-        let sa = super::sais::<i8>(text.into()).unwrap().1;
+        let sa = super::sais::<i8>(text).unwrap().1;
 
         assert_eq!(sa.inner(), &*expected);
     }
@@ -165,7 +164,7 @@ mod test {
     fn test_sais_index_limits_u16() {
         let text = &[0_u8; i16::MAX as usize];
         let expected: Box<[_]> = (0..i16::MAX as u16).rev().collect();
-        let sa = super::sais::<u16>(text.into()).unwrap().1;
+        let sa = super::sais::<u16>(text).unwrap().1;
 
         assert_eq!(sa.inner(), &*expected);
     }
@@ -174,7 +173,7 @@ mod test {
     fn test_sais_index_limits_i16() {
         let text = &[0_u8; i16::MAX as usize];
         let expected: Box<[_]> = (0..i16::MAX).rev().collect();
-        let sa = super::sais::<i16>(text.into()).unwrap().1;
+        let sa = super::sais::<i16>(text).unwrap().1;
 
         assert_eq!(sa.inner(), &*expected);
     }

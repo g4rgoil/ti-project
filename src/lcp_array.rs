@@ -3,7 +3,7 @@ use std::iter::zip;
 
 use crate::index::{ArrayIndex, ToIndex};
 use crate::suffix_array::{InverseSuffixArray, SuffixArray};
-use crate::text::Text;
+
 
 /// Represents an owned longest common prefix (LCP) array for a text.
 /// Additionally stores a reference to a suffix array of the original text.
@@ -40,10 +40,10 @@ impl<'sa, 'txt, T, Idx> LCPArray<'sa, 'txt, T, Idx> {
         Idx: ArrayIndex,
         T: PartialEq,
     {
-        let (text, mut prev) = (self.sa().text(), Text::from_slice(&[]));
+        let (text, mut prev) = (self.sa().text(), &[][..]);
         for (lcp, i) in zip(self.lcp.iter(), self.sa().inner().iter()) {
-            assert_eq!(prev.common_prefix(&text[*i..]), lcp.as_());
-            prev = &text[*i..];
+            assert_eq!(common_prefix(prev, &text[i.as_()..]), lcp.as_());
+            prev = &text[i.as_()..];
         }
     }
 }
@@ -77,9 +77,9 @@ pub fn naive<'sa, 'txt, T: Ord, Idx: ArrayIndex>(
     let mut lcp = vec![Idx::ZERO; text.len()];
 
     let iter = zip(sa.inner().iter(), lcp.iter_mut());
-    iter.fold(Text::from_slice(&[]), |prev, (i, dst)| {
-        let next = &text[*i..];
-        *dst = prev.common_prefix(next).to_index();
+    iter.fold(&[][..], |prev, (i, dst)| {
+        let next = &text[i.as_()..];
+        *dst = common_prefix(prev, next).to_index();
         next
     });
 
@@ -109,7 +109,7 @@ pub fn kasai<'sa, 'txt, T: Ord, Idx: ArrayIndex>(
                 let j = sa[isa_i.as_() - 1];
                 let suffix_i_l = &text[i + l..];
                 let suffix_j_l = &text[j.as_() + l..];
-                l += suffix_i_l.common_prefix(suffix_j_l);
+                l += common_prefix(suffix_i_l, suffix_j_l);
 
                 lcp[isa_i.as_()].write(l.to_index());
                 l.saturating_sub(1)
@@ -156,7 +156,7 @@ pub fn phi<'sa, 'txt, T: Ord, Idx: ArrayIndex>(
         let suffix_i_l = &text[i + l..];
         let suffix_j_l = &text[j.as_() + l..];
 
-        *j = (l + suffix_i_l.common_prefix(suffix_j_l)).to_index();
+        *j = (l + common_prefix(suffix_i_l, suffix_j_l)).to_index();
         j.as_().saturating_sub(1)
     });
 
@@ -169,7 +169,6 @@ pub fn phi<'sa, 'txt, T: Ord, Idx: ArrayIndex>(
     LCPArray { sa, lcp }
 }
 
-#[cfg(test)]
 mod test {
     use super::*;
     use crate::suffix_array as sa;

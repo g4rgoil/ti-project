@@ -5,7 +5,7 @@ use self::alphabet::Symbol;
 use crate::num::{ArrayIndex, AsPrimitive, Limits, ToIndex, Zero};
 use crate::sais;
 use crate::sais::index::SignedIndex;
-use crate::text::Text;
+
 
 pub type SAResult<'a, T, Idx> =
     std::result::Result<(usize, SuffixArray<'a, T, Idx>), Error>;
@@ -24,11 +24,11 @@ pub enum Error {
 /// performance of the algorithm is _O(n² * log(n))_.
 ///
 /// [`sort_by_key`]: slice::sort_by_key
-pub fn naive<T: Symbol, Idx: ArrayIndex>(text: &Text<T>) -> SAResult<T, Idx> {
+pub fn naive<T: Symbol, Idx: ArrayIndex>(text: &[T]) -> SAResult<T, Idx> {
     // TODO put this into its own function
     if text.len().saturating_sub(1) <= Idx::MAX.as_() {
         let mut sa: Box<_> = (0..text.len()).map(Idx::from_usize).collect();
-        sa.sort_unstable_by_key(|i| &text[*i..]);
+        sa.sort_unstable_by_key(|i| &text[i.as_()..]);
 
         let memory = sa.len() * std::mem::size_of::<Idx>();
         Ok((memory, SuffixArray { text, sa }))
@@ -41,7 +41,7 @@ pub fn naive<T: Symbol, Idx: ArrayIndex>(text: &Text<T>) -> SAResult<T, Idx> {
 /// Computes the suffix array for `text` using Suffix-Array-Induced-Sorting (SAIS).
 ///
 /// TODO
-pub fn sais<Idx: sais::index::Index>(text: &Text<u8>) -> SAResult<u8, Idx>
+pub fn sais<Idx: sais::index::Index>(text: &[u8]) -> SAResult<u8, Idx>
 where
     Idx::Signed: SignedIndex,
 {
@@ -61,18 +61,18 @@ where
 /// - The suffix array sorts the suffixes of the original text in ascending
 ///   lexicographic order.
 pub struct SuffixArray<'txt, T, Idx> {
-    text: &'txt Text<T>,
+    text: &'txt [T],
     sa: Box<[Idx]>,
 }
 
 impl<'txt, T, Idx> SuffixArray<'txt, T, Idx> {
-    pub unsafe fn new_unchecked(text: &'txt Text<T>, sa: Box<[Idx]>) -> Self {
+    pub unsafe fn new_unchecked(text: &'txt [T], sa: Box<[Idx]>) -> Self {
         // TODO debug asserts?
         Self { text, sa }
     }
 
     /// Returns a reference to the original text.
-    pub fn text(&self) -> &'txt Text<T> { self.text }
+    pub fn text(&self) -> &'txt [T] { self.text }
 
     /// Returns a reference to the suffix array.
     pub fn inner(&self) -> &[Idx] { &self.sa }
@@ -103,13 +103,13 @@ impl<'txt, T, Idx> SuffixArray<'txt, T, Idx> {
     ///
     /// Note: This is a **very expensive** operation, with _O(n²)_ worst case
     /// performance.
-    pub fn verify(&self, text: &Text<T>)
+    pub fn verify(&self, text: &[T])
     where
         Idx: ArrayIndex,
         T: Ord + fmt::Debug,
     {
         let is_increasing = zip(self.sa.iter(), self.sa.iter().skip(1))
-            .all(|(i, j)| text[*i..] < text[*j..]);
+            .all(|(i, j)| text[i.as_()..] < text[j.as_()..]);
         assert!(is_increasing, "the suffix array is not sorted in increasing order");
 
         let mut arr = vec![false; text.len()];
