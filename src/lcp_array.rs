@@ -15,7 +15,9 @@ use crate::suffix_array::{InverseSuffixArray, SuffixArray};
 /// This type guarantees the following invariants for the LCP array.
 ///
 /// - The LCP array has the same length as the original text.
-/// - For any text `LCP[0] == Idx::ZERO`.
+/// - For `i = 0`: `lcp[i] == 0`.
+/// - For `i > 0`: `lcp[i] = max { l | text[sa[i]..sa[i] + l] ==
+///                                    text[sa[i-1]..sa[i-1] + l]}`
 pub struct LCPArray<'sa, 'txt, T, Idx> {
     sa: &'sa SuffixArray<'txt, T, Idx>,
     lcp: Box<[Idx]>,
@@ -77,8 +79,7 @@ pub fn naive<'sa, 'txt, T: Ord, Idx: ArrayIndex>(
     let text = sa.text();
     let mut lcp = vec![zero(); text.len()].into_boxed_slice();
 
-    let iter = zip(sa.inner().iter(), lcp.iter_mut());
-    iter.fold(&[][..], |prev, (i, dst)| {
+    zip(sa.inner(), &mut *lcp).fold(&[][..], |prev, (i, dst)| {
         let next = &text[i.as_()..];
         *dst = common_prefix(prev, next).to_index();
         next
@@ -101,28 +102,23 @@ pub fn kasai<'sa, 'txt, T: Ord, Idx: ArrayIndex>(
     isa: &InverseSuffixArray<'sa, 'txt, T, Idx>,
 ) -> LCPArray<'sa, 'txt, T, Idx> {
     let (text, sa) = (isa.sa().text(), isa.sa().inner());
-    let mut lcp = Vec::with_capacity(text.len());
-    {
-        let lcp = lcp.spare_capacity_mut();
-        let iter = isa.inner().iter().enumerate();
-        iter.fold(0, |mut l, (i, &isa_i)| {
-            if isa_i != zero() {
-                let j = sa[isa_i.as_() - 1];
-                let suffix_i_l = &text[i + l..];
-                let suffix_j_l = &text[j.as_() + l..];
-                l += common_prefix(suffix_i_l, suffix_j_l);
+    let mut lcp = vec![zero(); text.len()].into_boxed_slice();
 
-                lcp[isa_i.as_()].write(l.to_index());
-                l.saturating_sub(1)
-            } else {
-                lcp[isa_i.as_()].write(Idx::ZERO);
-                l
-            }
-        });
-    }
+    isa.inner().iter().enumerate().fold(0, |mut l, (i, &isa_i)| {
+        if isa_i != zero() {
+            let j = sa[isa_i.as_() - 1].as_();
+            let suffix_i_l = &text[i + l..];
+            let suffix_j_l = &text[j + l..];
+            l += common_prefix(suffix_i_l, suffix_j_l);
 
-    unsafe { lcp.set_len(text.len()) };
-    LCPArray { lcp: lcp.into_boxed_slice(), sa: isa.sa() }
+            lcp[isa_i.as_()] = l.to_index();
+            l.saturating_sub(1)
+        } else {
+            l
+        }
+    });
+
+    LCPArray { lcp, sa: isa.sa() }
 }
 
 /// Constructs an LCP array for the given text and suffix array using the
@@ -168,6 +164,7 @@ pub fn phi<'sa, 'txt, T: Ord, Idx: ArrayIndex>(
     LCPArray { sa, lcp }
 }
 
+/// Return the length of the longest common prefix of `lhs` and `rhs`.
 fn common_prefix<T: PartialEq>(lhs: &[T], rhs: &[T]) -> usize {
     zip(lhs, rhs).take_while(|(l, r)| l == r).count()
 }
