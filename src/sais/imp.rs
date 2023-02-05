@@ -1,10 +1,9 @@
 use std::iter::zip;
 use std::mem;
 
-use self::marked::Markable;
 use crate::prelude::*;
 use crate::sa::alphabet::*;
-use crate::sais::bucket::*;
+use crate::sais::{bucket::*, lms, marked::*};
 
 
 pub(super) fn sais_impl<A: Alphabet, Idx: ArrayIndex + Signed>(
@@ -106,7 +105,8 @@ fn sort_lms_strs<S: Symbol, Idx: ArrayIndex + Signed>(
         sa[dst] = Markable::new((text.len() - 1).to_index()).marked_if(lhs < rhs);
     }
 
-    // Induce suffixes of type L. Rightmost L suffixes are kept, all others are zeroed.
+    // Induce suffixes of type L
+    // Postcondition: Only leftmost L suffixes are in `sa`
     for i in 0..sa.len() {
         let value = sa[i];
         if value.is_unmarked_positive() {
@@ -114,15 +114,17 @@ fn sort_lms_strs<S: Symbol, Idx: ArrayIndex + Signed>(
             let rhs = text[idx.as_()];
             let dst = begin.take(rhs);
 
+            // Mark end of L bucket (=> `i-1` is not an L suffix)
             let lhs = text[idx.as_().saturating_sub(1)];
             sa[dst.as_()] = Markable::new(idx).marked_if(lhs < rhs);
+
             sa[i] = zero();
         } else {
             sa[i] = value.inverse();
         }
     }
 
-    // Induce suffixes of type S. Leftmost S suffixes are marked.
+    // Induce suffixes of type S
     let mut end = Buckets::<_, End>::new(buckets, histogram);
     for i in (0..sa.len()).rev() {
         let value = sa[i];
@@ -131,41 +133,42 @@ fn sort_lms_strs<S: Symbol, Idx: ArrayIndex + Signed>(
             let rhs = text[idx.as_()];
             let dst = end.take(rhs);
 
+            // Mark end of S bucket (=> `i` is S*, i-1` is not S suffix)
             let lhs = text[idx.as_().saturating_sub(1)];
             sa[dst.as_()] = Markable::new(idx).marked_if(lhs > rhs);
         }
     }
 
-    // Compact LMS suffixes at the front.
-    compress(sa, |i| if i.is_marked_positive() { Some(i.inverse()) } else { None })
+    // Compact partially sorted LMS suffixes at the front.
+    compact(sa, |i| if i.is_marked_positive() { Some(i.inverse()) } else { None })
 }
 
-
+/// Sort LMS suffix lexicographically, potentially by recursively invoking `sais_impl`.
+///
 /// Preconditions:
 /// - `lms` contains LMS suffies sorted by corresponding LMS substring
 /// - `lms.len()` + `tail.len()` = `text.len()`
 /// - `tail.len()` >= text.len() / 2
 ///
 /// Postcondition:
-/// - `lms` contains LMS suffixes sorted lexicographically
+/// - `lms` contains LMS suffixes sorted lexicographically.
 fn sort_lms_recursive<Idx: ArrayIndex + Signed, S: Symbol>(
     text: &[S],
     lms: &mut [Idx],
     tail: &mut [Idx],
 ) -> usize {
-    debug_assert_eq!(lms.len() + tail.len(), text.len());
-    debug_assert!(lms.len() <= text.len() / 2);
-
     tail.fill(zero());
 
-    // store end of LMS substrings
+    // Find end of LMS substring (i.e. beginning of next LMS suffix)
     lms::iter_lms(text).fold(text.len(), |lms_end, (lms_begin, _)| {
+        // Valid because `tail.len()` >= `text.len()` / 2. Also, LMS suffixes
+        // are never directly consecutive, thefore `lms_begin / 2` is unique.
         tail[lms_begin / 2] = lms_end.to_index();
         lms_begin + 1
     });
 
     // Assign names to LMS substrings
-    let (size, _) = lms.iter().fold((zero(), &[][..]), |(name, prev), begin| {
+    let (name, _) = lms.iter().fold((zero(), &[][..]), |(name, prev), begin| {
         let end = tail[begin.as_() / 2];
         let curr = &text[begin.as_()..end.as_()];
         let name = if prev == curr { name } else { name + one() };
@@ -174,19 +177,26 @@ fn sort_lms_recursive<Idx: ArrayIndex + Signed, S: Symbol>(
         (name, curr)
     });
 
-    if size.as_() < lms.len() {
-        let len = compress(tail, |x| x.is_positive().then(|| *x - one()));
-        let (lms_text, tail) = tail.split_at_mut(len);
-        let alphabet = IndexAlphabet::<Idx>::new(size.as_());
+    // LMS substrings are not yet unique
+    if name.as_() < lms.len() {
+        // Compact the new text and make sure names start at zero
+        compact(tail, |x| if x.is_positive() { Some(*x - one()) } else { None });
 
-        lms.fill(zero());
-        let memory = sais_impl::<_, Idx>(lms_text, lms, tail, alphabet);
+        let (lms_text, tail) = tail.split_at_mut(lms.len());
+        let lms_sa = lms;
+        lms_sa.fill(zero());
 
+        let alphabet = IndexAlphabet::<Idx>::new(name.as_());
+        let memory = sais_impl::<_, Idx>(lms_text, lms_sa, tail, alphabet);
+
+        // Write LMS suffixes in text order
         for ((suffix, _), dst) in lms::iter_lms(text).zip(lms_text.iter_mut().rev()) {
             *dst = suffix.to_index();
         }
 
-        for dst in lms.iter_mut() {
+        // Finally sort LMS suffixes using the suffix array for the reduced text.
+        // The result may (and will always) be non-unique.
+        for dst in lms_sa.iter_mut() {
             *dst = lms_text[dst.as_()];
         }
         memory
@@ -203,8 +213,8 @@ fn sort_lms_recursive<Idx: ArrayIndex + Signed, S: Symbol>(
 ///
 /// # Postcondition
 /// - `sa` contains the suffix array for `text`
-fn induce_final_order<Idx: ArrayIndex + Signed>(
-    text: &[impl Symbol],
+fn induce_final_order<S: Symbol, Idx: ArrayIndex + Signed>(
+    text: &[S],
     sa: &mut [Idx],
     lms_buckets: Buckets<Idx, End>,
     buckets: &mut [Idx],
@@ -271,7 +281,7 @@ fn induce_final_order<Idx: ArrayIndex + Signed>(
 
 /// Calls `f` on every element of `slice`. If the function returns
 /// [`Option::Some`] writes the value to the front of the slice.
-fn compress<T>(slice: &mut [T], mut f: impl FnMut(&T) -> Option<T>) -> usize {
+fn compact<T>(slice: &mut [T], mut f: impl FnMut(&T) -> Option<T>) -> usize {
     (0..slice.len()).fold(0, |i, j| match f(&slice[j]) {
         Some(value) => {
             // Safety: i <= j < slice.len()
@@ -280,111 +290,6 @@ fn compress<T>(slice: &mut [T], mut f: impl FnMut(&T) -> Option<T>) -> usize {
         },
         None => i,
     })
-}
-
-mod marked {
-    use crate::prelude::*;
-
-    /// A wrapper around signed integers which uses the sign bit to distinguish
-    /// between _marked_ and _unmarked_ values.
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    #[repr(transparent)]
-    pub struct Markable<T>(T);
-
-    impl<T: One> One for Markable<T> {
-        const ONE: Self = Self(T::ONE);
-    }
-
-    impl<T: Zero> Zero for Markable<T> {
-        const ZERO: Self = Self(T::ZERO);
-    }
-
-    #[allow(unused)]
-    impl<T: ArrayIndex + Signed> Markable<T> {
-        /// Return an unmarked `Markable` with the given `value`.
-        pub fn new(value: T) -> Self {
-            debug_assert!(!value.is_negative());
-            Self(value)
-        }
-
-        /// Return `true` iff `self` is marked.
-        pub fn is_marked(&self) -> bool { self.0.is_negative() }
-
-        /// Return `true` iff `self` is unmarked.
-        pub fn is_unmarked(&self) -> bool { !self.0.is_negative() }
-
-        /// Return `true` iff `self` is marked and its value is positive.
-        pub fn is_marked_positive(&self) -> bool { self.inverse().0.is_positive() }
-
-        /// Return `true` iff `self` is unmarked and its value is positive.
-        pub fn is_unmarked_positive(&self) -> bool { self.0.is_positive() }
-
-        /// Return the `value` of `self`.
-        pub fn get(&self) -> T { self.0 & T::MAX }
-
-        /// Return a marked `Markable` with the same value as `self`.
-        pub fn marked(&self) -> Self { Self(self.0 | T::MIN) }
-
-        /// Return an unmarked `Markable` with the same value as `self`.
-        pub fn unmarked(&self) -> Self { Self(self.get()) }
-
-        /// Return a `Markable` which is marked iff `self` is unmarked.
-        pub fn inverse(&self) -> Self { Self(self.0 ^ T::MIN) }
-
-        /// Return a `Markable` which is marked iff `pred` is `true`.
-        pub fn marked_if(&self, pred: bool) -> Self {
-            Self(self.0 | ((pred as usize) << (T::BITS - 1)).to_index())
-        }
-    }
-
-    impl<T> Markable<T> {
-        /// Safely cast a slice of `T`s to a slice of `Markable<T>`.
-        pub fn cast_mut_slice(slice: &mut [T]) -> &mut [Self] {
-            // Safety: `Markable<T>` has the same layout as `T`.
-            unsafe { &mut *(slice as *mut _ as *mut _) }
-        }
-    }
-}
-
-mod lms {
-    use std::{iter, mem, slice};
-
-    pub fn iter_lms<T: Ord>(text: &[T]) -> LMSIter<T> {
-        LMSIter { iter: text.iter().enumerate().rev(), prev: text.last() }
-    }
-
-    /// An iterator over the LMS suffixes of a text. Note that the implemenation
-    /// always iterates back to front. This `struct` is created by [`iter_lms`].
-    pub struct LMSIter<'a, T> {
-        iter: iter::Rev<iter::Enumerate<slice::Iter<'a, T>>>,
-        prev: Option<&'a T>,
-    }
-
-    impl<'a, T: Ord> Iterator for LMSIter<'a, T> {
-        type Item = (usize, &'a T);
-
-        #[inline(always)]
-        fn next(&mut self) -> Option<Self::Item> {
-            if let Some(ref mut prev) = self.prev {
-                for (_, next) in self.iter.by_ref() {
-                    if next < mem::replace(prev, next) {
-                        break;
-                    }
-                }
-
-                for (i, next) in self.iter.by_ref() {
-                    if next > *prev {
-                        return Some((i + 1, mem::replace(prev, next)));
-                    }
-                    *prev = next;
-                }
-                self.prev = None;
-            }
-            None
-        }
-
-        fn size_hint(&self) -> (usize, Option<usize>) { (0, Some(self.iter.len() / 2)) }
-    }
 }
 
 #[cfg(test)]

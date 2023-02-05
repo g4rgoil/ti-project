@@ -17,23 +17,12 @@ use std::{env, fs, hint, io};
 use crate::cast::Transmutable;
 use crate::prelude::*;
 
-
 pub fn main() -> Result<TestResults, String> {
-    #[inline(never)]
     fn run_timed<T>(f: impl FnOnce() -> T) -> (T, Duration) {
         let before = Instant::now();
         let result = hint::black_box(f());
         let elapsed = before.elapsed();
         (result, elapsed)
-    }
-
-    fn run(text: &[u8]) -> Result<TestResults, String> {
-        None.or_else(|| try_run_sa::<u32>(text))
-            .or_else(|| try_run_sa::<u64>(text))
-            .or_else(|| try_run_sa::<usize>(text))
-            .ok_or_else(|| {
-                format!("cannot find index type for text of length {}", text.len())
-            })
     }
 
     fn try_run_sa<Idx>(text: &[u8]) -> Option<TestResults>
@@ -42,14 +31,12 @@ pub fn main() -> Result<TestResults, String> {
         Idx::Signed: ArrayIndex + Signed,
     {
         let (result, sa_time) = run_timed(|| sa::sais::<Idx>(text));
-        let (sa_memory, _sa) = result.ok()?;
+        let (sa_memory, sa) = result.ok()?;
 
         #[cfg(feature = "verify")]
-        _sa.verify(text);
+        sa.verify(text);
 
-        // Some(TestResults { sa_time, sa_memory, ..run_lcp(sa) })
-
-        Some(TestResults { sa_time, sa_memory, ..Default::default() })
+        Some(TestResults { sa_time, sa_memory, ..run_lcp(sa) })
     }
 
     fn run_lcp<Idx: ArrayIndex>(sa: sa::SuffixArray<u8, Idx>) -> TestResults {
@@ -65,6 +52,15 @@ pub fn main() -> Result<TestResults, String> {
         }
 
         TestResults { lcp_naive_time, lcp_kasai_time, lcp_phi_time, ..Default::default() }
+    }
+
+    fn run(text: &[u8]) -> Result<TestResults, String> {
+        None.or_else(|| try_run_sa::<u32>(text))
+            .or_else(|| try_run_sa::<u64>(text))
+            .or_else(|| try_run_sa::<usize>(text))
+            .ok_or_else(|| {
+                format!("cannot find index type for text of length {}", text.len())
+            })
     }
 
     let param = env::args().nth(1);

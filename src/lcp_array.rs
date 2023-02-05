@@ -168,7 +168,7 @@ pub fn phi<'sa, 'txt, T: Ord, Idx: ArrayIndex>(
     LCPArray { sa, lcp }
 }
 
-pub fn common_prefix<T: PartialEq>(lhs: &[T], rhs: &[T]) -> usize {
+fn common_prefix<T: PartialEq>(lhs: &[T], rhs: &[T]) -> usize {
     zip(lhs, rhs).take_while(|(l, r)| l == r).count()
 }
 

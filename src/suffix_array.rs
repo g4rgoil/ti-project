@@ -117,14 +117,16 @@ impl<'txt, T, Idx> SuffixArray<'txt, T, Idx> {
         Idx: ArrayIndex,
         T: Ord + fmt::Debug,
     {
+        assert_eq!(text.len(), self.sa.len(), "the suffix array has incorrect length");
+
         let is_increasing = zip(self.sa.iter(), self.sa.iter().skip(1))
             .all(|(i, j)| text[i.as_()..] < text[j.as_()..]);
         assert!(is_increasing, "the suffix array is not sorted in increasing order");
 
-        let mut arr = vec![false; text.len()];
-        self.sa.iter().for_each(|i| arr[i.as_()] = true);
+        let mut arr = vec![0_u8; text.len()];
+        self.sa.iter().for_each(|i| arr[i.as_()] += 1);
         assert!(
-            arr.iter().all(|b| *b),
+            arr.iter().all(|x| *x == 1),
             "the suffix array is not a permutation of [0..len)"
         );
     }
@@ -188,8 +190,7 @@ impl<'sa, 'txt, T: fmt::Debug, Idx: fmt::Debug> fmt::Debug
 pub mod alphabet {
     use std::{fmt, marker::PhantomData};
 
-    use crate::index::*;
-    use crate::num::*;
+    use crate::prelude::*;
 
     pub trait Symbol: Sized + Copy + Ord + AsPrimitive<usize> + fmt::Debug {}
 
