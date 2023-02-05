@@ -1,5 +1,6 @@
 use std::{iter, mem, slice};
 
+/// Return an iterator of the LMS suffixes of `text` from right to left.
 pub fn iter_lms<T: Ord>(text: &[T]) -> LMSIter<T> {
     LMSIter { iter: text.iter().enumerate().rev(), prev: text.last() }
 }

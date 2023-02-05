@@ -1,3 +1,5 @@
+//! Contains the core logic for the implementation of SAIS.
+
 use std::iter::zip;
 use std::mem;
 
@@ -5,13 +7,24 @@ use crate::prelude::*;
 use crate::sa::alphabet::*;
 use crate::sais::{bucket::*, lms, marked::*};
 
-
+/// Entry point for suffix array construction. Called recursively by
+/// [`sort_lms_recursive`] to sort LMS suffixes.
+///
+/// # Preconditions
+/// - `text.len()` == `sa.len()`
+/// - `sa` must be zeroed
+///
+/// # Postconditions
+/// - `sa` contains the suffix array for `text`
+#[inline(always)]
 pub(super) fn sais_impl<A: Alphabet, Idx: ArrayIndex + Signed>(
     text: &[A::Symbol],
     sa: &mut [Idx],
     fs: &mut [Idx],
     alphabet: A,
 ) -> usize {
+    assert_eq!(text.len(), sa.len());
+
     if text.is_empty() {
         return 0;
     }
@@ -52,7 +65,7 @@ pub(super) fn sais_impl<A: Alphabet, Idx: ArrayIndex + Signed>(
     memory + sais_memory
 }
 
-pub(super) fn sais_with_buckets<S: Symbol, Idx: ArrayIndex + Signed>(
+fn sais_with_buckets<S: Symbol, Idx: ArrayIndex + Signed>(
     text: &[S],
     sa: &mut [Idx],
     histogram: &mut [Idx],
@@ -76,10 +89,10 @@ pub(super) fn sais_with_buckets<S: Symbol, Idx: ArrayIndex + Signed>(
 
 /// Induce a partial order among LMS suffixes.
 ///
-/// Preconditions:
+/// # Preconditions
 /// - `histogram` is correctly initialized for `text`
 ///
-/// Postconditions:
+/// # Postconditions
 /// - `sa` contains all LMS suffixes in the first `num_lms` positions
 /// - The suffixes are sorted by corresponding LMS substring
 /// - `lms_buckets` points to the start of LMS buckets
@@ -143,14 +156,14 @@ fn sort_lms_strs<S: Symbol, Idx: ArrayIndex + Signed>(
     compact(sa, |i| if i.is_marked_positive() { Some(i.inverse()) } else { None })
 }
 
-/// Sort LMS suffix lexicographically, potentially by recursively invoking `sais_impl`.
+/// Sort LMS suffixes lexicographically, potentially by recursively invoking `sais_impl`.
 ///
-/// Preconditions:
+/// # Preconditions
 /// - `lms` contains LMS suffies sorted by corresponding LMS substring
 /// - `lms.len()` + `tail.len()` = `text.len()`
 /// - `tail.len()` >= text.len() / 2
 ///
-/// Postcondition:
+/// # Postcondition
 /// - `lms` contains LMS suffixes sorted lexicographically.
 fn sort_lms_recursive<Idx: ArrayIndex + Signed, S: Symbol>(
     text: &[S],
@@ -280,7 +293,9 @@ fn induce_final_order<S: Symbol, Idx: ArrayIndex + Signed>(
 }
 
 /// Calls `f` on every element of `slice`. If the function returns
-/// [`Option::Some`] writes the value to the front of the slice.
+/// [`Some`] writes the value to the front of the slice.
+///
+/// [`Some`]: Option::Some
 fn compact<T>(slice: &mut [T], mut f: impl FnMut(&T) -> Option<T>) -> usize {
     (0..slice.len()).fold(0, |i, j| match f(&slice[j]) {
         Some(value) => {

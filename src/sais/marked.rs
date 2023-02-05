@@ -6,7 +6,7 @@ use crate::prelude::*;
 /// between _marked_ and _unmarked_ values.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 #[repr(transparent)]
-pub struct Markable<T>(T);
+pub struct Markable<T>(#[doc(hidden)] T);
 
 impl<T: One> One for Markable<T> {
     const ONE: Self = Self(T::ONE);

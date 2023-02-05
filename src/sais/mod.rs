@@ -1,3 +1,9 @@
+//! Implementation of Suffix Array Induced sorting (SAIS).
+//!
+//! The main part of the implementation is located in [`imp`]. Additionally
+//! required data structures and functionality are located in [`bucket`],
+//! [`lms`], and [`marked`].
+
 mod bucket;
 mod imp;
 mod lms;
