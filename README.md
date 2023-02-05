@@ -11,7 +11,7 @@ Project for the lecture [Text-Indexierung](https://algo2.iti.kit.edu/4326.php) d
 Building the project requires an up-to-date version of Rust (tested with 1.66.0).
 On Ubuntu 20.04 this requires installing through [`rustup`](https://rustup.rs) rather than `apt`.
 
-```sh
+```
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
@@ -21,15 +21,15 @@ No further external dependencies are required to build and run the project.
 
 The project can be built using Cargo.
 
-```sh
+```
 cargo build --release
 ```
 
 # Running
 
-To measure running times and memory usage for suffix and LCP array construction for a text, simply run 
+Once built, running times and memory usage for suffix and LCP array construction can be measured by executing the following command.
 
-```sh
+```
 ./target/release/ti-project <file>
 ```
 
