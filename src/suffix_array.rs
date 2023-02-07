@@ -73,7 +73,7 @@ where
     sais::sais(text)
 }
 
-pub fn difsuvsort(text: &[u8]) -> SuffixArray<u8, u32> {
+pub fn divsufsort(text: &[u8]) -> SuffixArray<u8, u32> {
     // TODO this check is not correct
     let mut sa = vec![0_u32; text.len()];
 

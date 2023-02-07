@@ -1,3 +1,5 @@
+#![feature(path_file_prefix)]
+
 pub mod lcp_array;
 pub mod num;
 pub mod sais;
@@ -11,6 +13,8 @@ pub mod prelude {
     pub use crate::suffix_array as sa;
 }
 
+use std::ffi::OsStr;
+use std::path::Path;
 use std::process::{ExitCode, Termination};
 use std::time::{Duration, Instant};
 use std::{env, fs, hint, io};
@@ -37,7 +41,11 @@ pub fn main() -> Result<TestResults, String> {
         #[cfg(feature = "verify")]
         sa.verify(text);
 
-        Some(TestResults { sa_time, sa_memory, ..run_lcp(sa) })
+        if cfg!(feature = "no_lcp") {
+            Some(TestResults { sa_time, sa_memory, ..Default::default() })
+        } else {
+            Some(TestResults { sa_time, sa_memory, ..run_lcp(sa) })
+        }
     }
 
     fn run_lcp<Idx: ArrayIndex>(sa: sa::SuffixArray<u8, Idx>) -> TestResults {
@@ -64,18 +72,56 @@ pub fn main() -> Result<TestResults, String> {
             })
     }
 
-    let param = env::args().nth(1);
+
+    let algo = env::args().nth(1).unwrap();
+    let param = env::args().nth(2);
     let input_path = param.ok_or_else(|| "expected exactly 1 argument".to_owned())?;
+    let collection =
+        Path::new(&input_path).file_prefix().and_then(OsStr::to_str).unwrap().to_owned();
     let input_file = fs::read(input_path).map_err(|e| e.to_string())?;
-    run(&input_file)
+    let text = &*input_file;
+
+    match &*algo {
+        "--sais" => {
+            let results = run(&input_file)?;
+            Ok(TestResults {
+                collection,
+                algo: "SAIS".to_owned(),
+                size: text.len(),
+                ..results
+            })
+        },
+        "--libsais" => {
+            let (_, sa_time) = run_timed(|| sa::libsais(&input_file));
+            Ok(TestResults {
+                collection,
+                algo: "libsais".to_owned(),
+                size: text.len(),
+                sa_time,
+                ..Default::default()
+            })
+        },
+        "--divsuf" => {
+            let (_, sa_time) = run_timed(|| sa::divsufsort(&input_file));
+            Ok(TestResults {
+                collection,
+                algo: "divsufsort".to_owned(),
+                size: text.len(),
+                sa_time,
+                ..Default::default()
+            })
+        },
+        _ => Err("unknown aglorithm".to_owned()),
+    }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct TestResults {
+    algo: String,
+    size: usize,
+    collection: String,
     sa_time: Duration,
     sa_memory: usize,
-    sa_libsais_time: Duration,
-    sa_divsuf_time: Duration,
     lcp_naive_time: Duration,
     lcp_kasai_time: Duration,
     lcp_phi_time: Duration,
@@ -86,18 +132,20 @@ impl Termination for TestResults {
         use io::Write;
         let _ = writeln!(
             io::stderr(),
-            "RESULT name=Pascal\tMehnert \
+            "RESULT \
+            algo={} \
+            collection={} \
+            size={} \
             sa_construction_time={} \
             sa_construction_memory={} \
-            sa_libsais_time={} \
-            sa_divsuf_time={} \
             lcp_naive_construction_time={} \
             lcp_kasai_construction_time={} \
             lcp_phi_construction_time={}",
+            self.algo,
+            self.collection,
+            self.size,
             self.sa_time.as_millis(),
             self.sa_memory / (1 << 20),
-            self.sa_libsais_time.as_millis(),
-            self.sa_divsuf_time.as_millis(),
             self.lcp_naive_time.as_millis(),
             self.lcp_kasai_time.as_millis(),
             self.lcp_phi_time.as_millis()

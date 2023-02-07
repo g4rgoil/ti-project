@@ -5,6 +5,7 @@ edition = "2021"
 
 [features]
 verify = []
+no_lcp = []
 
 [profile.release]
 debug = true
