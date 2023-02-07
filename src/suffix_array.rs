@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::iter::zip;
+use std::ptr;
 
 pub use alphabet::Alphabet;
 
@@ -9,6 +10,7 @@ use self::alphabet::Symbol;
 use crate::cast::Transmutable;
 use crate::prelude::*;
 use crate::sais;
+use crate::sys;
 
 pub type SAResult<'a, T, Idx> = Result<(usize, SuffixArray<'a, T, Idx>), Error>;
 
@@ -42,9 +44,7 @@ pub fn naive<T: Symbol, Idx: ArrayIndex>(text: &[T]) -> SAResult<T, Idx> {
     }
 }
 
-pub fn libsais(text: &[u8]) -> SuffixArray<u32> {
-    assert!(text.fits::<u32>());
-
+pub fn libsais(text: &[u8]) -> SuffixArray<u8, u32> {
     let mut sa = vec![0_u32; text.len()];
 
     let result = unsafe {
@@ -57,7 +57,7 @@ pub fn libsais(text: &[u8]) -> SuffixArray<u32> {
         )
     };
     assert!(result == 0);
-    SuffixArray(sa.into_boxed_slice())
+    SuffixArray { text, sa: sa.into_boxed_slice() }
 }
 
 /// Computes the suffix array for `text` using Suffix Array Induced Sorting (SAIS).
@@ -71,6 +71,18 @@ where
     Idx::Signed: ArrayIndex,
 {
     sais::sais(text)
+}
+
+pub fn difsuvsort(text: &[u8]) -> SuffixArray<u8, u32> {
+    // TODO this check is not correct
+    let mut sa = vec![0_u32; text.len()];
+
+    let sa_i32 = unsafe {
+        std::slice::from_raw_parts_mut(sa.as_mut_ptr() as *mut i32, text.len())
+    };
+    divsufsort::sort_in_place(text, sa_i32);
+
+    SuffixArray { text, sa: sa.into_boxed_slice() }
 }
 
 /// Represents an owned suffix array for a text. Additionally stores a reference
