@@ -2,6 +2,7 @@ pub mod lcp_array;
 pub mod num;
 pub mod sais;
 pub mod suffix_array;
+mod sys;
 
 pub mod prelude {
     pub use crate::index::{ArrayIndex, ToIndex};
@@ -73,6 +74,7 @@ pub fn main() -> Result<TestResults, String> {
 pub struct TestResults {
     sa_time: Duration,
     sa_memory: usize,
+    sa_libsais_time: Duration,
     lcp_naive_time: Duration,
     lcp_kasai_time: Duration,
     lcp_phi_time: Duration,
@@ -86,11 +88,13 @@ impl Termination for TestResults {
             "RESULT name=Pascal\tMehnert \
             sa_construction_time={} \
             sa_construction_memory={} \
+            sa_libsais_time={}
             lcp_naive_construction_time={} \
             lcp_kasai_construction_time={} \
             lcp_phi_construction_time={}",
             self.sa_time.as_millis(),
             self.sa_memory / (1 << 20),
+            self.sa_libsais_time.as_millis(),
             self.lcp_naive_time.as_millis(),
             self.lcp_kasai_time.as_millis(),
             self.lcp_phi_time.as_millis()

@@ -42,6 +42,24 @@ pub fn naive<T: Symbol, Idx: ArrayIndex>(text: &[T]) -> SAResult<T, Idx> {
     }
 }
 
+pub fn libsais(text: &[u8]) -> SuffixArray<u32> {
+    assert!(text.fits::<u32>());
+
+    let mut sa = vec![0_u32; text.len()];
+
+    let result = unsafe {
+        sys::libsais(
+            text.as_ptr(),
+            sa.as_mut_ptr() as *mut i32,
+            text.len() as i32,
+            0,
+            ptr::null(),
+        )
+    };
+    assert!(result == 0);
+    SuffixArray(sa.into_boxed_slice())
+}
+
 /// Computes the suffix array for `text` using Suffix Array Induced Sorting (SAIS).
 ///
 /// The suffix array will use indices of type `Idx`. The index must have a

@@ -6,4 +6,11 @@ edition = "2021"
 [features]
 verify = []
 
+[profile.release]
+debug = true
+
 [dependencies]
+divsufsort = "2.0.0"
+
+[build-dependencies]
+cc = "1.0"
