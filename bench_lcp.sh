@@ -4,7 +4,7 @@ cargo clean
 cargo build --release
 
 bench() {
-    for size in $3
+    for size in $1
     do
         for file in ~/ti-test-data/pizza-chili/*/*.${size}
         do

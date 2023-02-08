@@ -44,8 +44,8 @@ pub fn naive<T: Symbol, Idx: ArrayIndex>(text: &[T]) -> SAResult<T, Idx> {
     }
 }
 
-pub fn libsais(text: &[u8]) -> SuffixArray<u8, u32> {
-    let mut sa = vec![0_u32; text.len()];
+pub fn libsais(text: &[u8]) -> SuffixArray<u8, i32> {
+    let mut sa = vec![0_i32; text.len()];
 
     let result = unsafe {
         sys::libsais(
@@ -56,7 +56,23 @@ pub fn libsais(text: &[u8]) -> SuffixArray<u8, u32> {
             ptr::null(),
         )
     };
-    assert!(result == 0);
+    assert_eq!(result, 0);
+    SuffixArray { text, sa: sa.into_boxed_slice() }
+}
+
+pub fn libsais64(text: &[u8]) -> SuffixArray<u8, i64> {
+    let mut sa = vec![0_i64; text.len()];
+
+    let result = unsafe {
+        sys::libsais64(
+            text.as_ptr(),
+            sa.as_mut_ptr() as *mut i64,
+            text.len() as i64,
+            0,
+            ptr::null(),
+        )
+    };
+    assert_eq!(result, 0);
     SuffixArray { text, sa: sa.into_boxed_slice() }
 }
 
@@ -74,7 +90,6 @@ where
 }
 
 pub fn divsufsort(text: &[u8]) -> SuffixArray<u8, u32> {
-    // TODO this check is not correct
     let mut sa = vec![0_u32; text.len()];
 
     let sa_i32 = unsafe {

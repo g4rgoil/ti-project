@@ -41,14 +41,20 @@ pub fn main() -> Result<TestResults, String> {
         #[cfg(feature = "verify")]
         sa.verify(text);
 
-        if cfg!(feature = "no_lcp") {
-            Some(TestResults { sa_time, sa_memory, ..Default::default() })
-        } else {
-            Some(TestResults { sa_time, sa_memory, ..run_lcp(sa) })
-        }
+        Some(TestResults {
+            sa_time,
+            sa_memory,
+            algo: Algorithm::Sais,
+            size: text.len(),
+            ..run_lcp(sa)
+        })
     }
 
     fn run_lcp<Idx: ArrayIndex>(sa: sa::SuffixArray<u8, Idx>) -> TestResults {
+        if cfg!(feature = "no_lcp") {
+            return Default::default();
+        }
+
         let (_lcp_naive, lcp_naive_time) = run_timed(|| lcp::naive(&sa));
         let (_lcp_kasai, lcp_kasai_time) = run_timed(|| lcp::kasai(&sa.inverse()));
         let (_lcp_phi, lcp_phi_time) = run_timed(|| lcp::phi(&sa));
@@ -63,61 +69,75 @@ pub fn main() -> Result<TestResults, String> {
         TestResults { lcp_naive_time, lcp_kasai_time, lcp_phi_time, ..Default::default() }
     }
 
-    fn run(text: &[u8]) -> Result<TestResults, String> {
-        None.or_else(|| try_run_sa::<u32>(text))
-            .or_else(|| try_run_sa::<u64>(text))
-            .or_else(|| try_run_sa::<usize>(text))
-            .ok_or_else(|| {
-                format!("cannot find index type for text of length {}", text.len())
-            })
+    fn run(text: &[u8], algo: Algorithm) -> Result<TestResults, String> {
+        match algo {
+            Algorithm::Sais => None
+                .or_else(|| try_run_sa::<u32>(text))
+                .or_else(|| try_run_sa::<u64>(text))
+                .or_else(|| try_run_sa::<usize>(text))
+                .ok_or_else(|| {
+                    format!("cannot find index type for text of length {}", text.len())
+                }),
+            Algorithm::Libsais => {
+                if text.len() <= i32::MAX as usize {
+                    let (sa, sa_time) = run_timed(|| sa::libsais(text));
+                    Ok(TestResults { sa_time, algo, size: text.len(), ..run_lcp(sa) })
+                } else if text.len() <= i64::MAX as usize {
+                    let (sa, sa_time) = run_timed(|| sa::libsais64(text));
+                    Ok(TestResults { sa_time, algo, size: text.len(), ..run_lcp(sa) })
+                } else {
+                    Err("text too big for libsais".to_owned())
+                }
+            },
+            Algorithm::Divsuf => {
+                if text.len() <= u32::MAX as usize {
+                    let (sa, sa_time) = run_timed(|| sa::divsufsort(text));
+                    Ok(TestResults { sa_time, algo, size: text.len(), ..run_lcp(sa) })
+                } else {
+                    Err("text too big for divsufsort".to_owned())
+                }
+            },
+        }
     }
 
 
-    let algo = env::args().nth(1).unwrap();
+    let algo_param = env::args().nth(1).unwrap();
     let param = env::args().nth(2);
     let input_path = param.ok_or_else(|| "expected exactly 1 argument".to_owned())?;
     let collection =
         Path::new(&input_path).file_prefix().and_then(OsStr::to_str).unwrap().to_owned();
     let input_file = fs::read(input_path).map_err(|e| e.to_string())?;
-    let text = &*input_file;
+    let algo = match &*algo_param {
+        "--sais" => Algorithm::Sais,
+        "--libsais" => Algorithm::Libsais,
+        "--divsuf" => Algorithm::Divsuf,
+        _ => Err("unknown algorithm".to_owned())?,
+    };
 
-    match &*algo {
-        "--sais" => {
-            let results = run(&input_file)?;
-            Ok(TestResults {
-                collection,
-                algo: "SAIS".to_owned(),
-                size: text.len(),
-                ..results
-            })
-        },
-        "--libsais" => {
-            let (_, sa_time) = run_timed(|| sa::libsais(&input_file));
-            Ok(TestResults {
-                collection,
-                algo: "libsais".to_owned(),
-                size: text.len(),
-                sa_time,
-                ..Default::default()
-            })
-        },
-        "--divsuf" => {
-            let (_, sa_time) = run_timed(|| sa::divsufsort(&input_file));
-            Ok(TestResults {
-                collection,
-                algo: "divsufsort".to_owned(),
-                size: text.len(),
-                sa_time,
-                ..Default::default()
-            })
-        },
-        _ => Err("unknown aglorithm".to_owned()),
+    Ok(TestResults { collection, ..run(&*input_file, algo)? })
+}
+
+#[derive(Debug, Default, Clone)]
+enum Algorithm {
+    #[default]
+    Sais,
+    Libsais,
+    Divsuf,
+}
+
+impl Algorithm {
+    fn name(&self) -> &'static str {
+        match self {
+            Algorithm::Sais => "SAIS",
+            Algorithm::Libsais => "libsais",
+            Algorithm::Divsuf => "divsufsort",
+        }
     }
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct TestResults {
-    algo: String,
+    algo: Algorithm,
     size: usize,
     collection: String,
     sa_time: Duration,
@@ -141,7 +161,7 @@ impl Termination for TestResults {
             lcp_naive_construction_time={} \
             lcp_kasai_construction_time={} \
             lcp_phi_construction_time={}",
-            self.algo,
+            self.algo.name(),
             self.collection,
             self.size,
             self.sa_time.as_millis(),
