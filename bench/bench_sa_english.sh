@@ -8,8 +8,8 @@ bench() {
     do
         echo "~/ti-test-data/pizza-chili/$1/$1.${size}"
         ./target/release/ti-project --sais ~/ti-test-data/pizza-chili/$1/$2.${size}
-        # ./target/release/ti-project --libsais ~/ti-test-data/pizza-chili/$1/$2.${size}
-        # ./target/release/ti-project --divsuf ~/ti-test-data/pizza-chili/$1/$2.${size}
+        ./target/release/ti-project --libsais ~/ti-test-data/pizza-chili/$1/$2.${size}
+        ./target/release/ti-project --divsuf ~/ti-test-data/pizza-chili/$1/$2.${size}
     done
 }
 
