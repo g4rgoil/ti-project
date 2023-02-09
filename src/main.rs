@@ -90,29 +90,31 @@ pub fn main() -> Result<TestResults, String> {
                 }
             },
             Algorithm::Divsuf => {
-                if text.len() <= u32::MAX as usize {
+                if text.len() <= i32::MAX as usize {
                     let (sa, sa_time) = run_timed(|| sa::divsufsort(text));
                     Ok(TestResults { sa_time, algo, size: text.len(), ..run_lcp(sa) })
                 } else {
                     Err("text too big for divsufsort".to_owned())
                 }
             },
+            Algorithm::Libdivsuf => {
+                if text.len() <= i32::MAX as usize {
+                    let (sa, sa_time) = run_timed(|| sa::libdivsufsort(text));
+                    Ok(TestResults { sa_time, algo, size: text.len(), ..run_lcp(sa) })
+                } else {
+                    Err("text too big for libdivsufsort".to_owned())
+                }
+            },
         }
     }
 
-
-    let algo_param = env::args().nth(1).unwrap();
     let param = env::args().nth(2);
     let input_path = param.ok_or_else(|| "expected exactly 1 argument".to_owned())?;
     let collection =
         Path::new(&input_path).file_prefix().and_then(OsStr::to_str).unwrap().to_owned();
     let input_file = fs::read(input_path).map_err(|e| e.to_string())?;
-    let algo = match &*algo_param {
-        "--sais" => Algorithm::Sais,
-        "--libsais" => Algorithm::Libsais,
-        "--divsuf" => Algorithm::Divsuf,
-        _ => Err("unknown algorithm".to_owned())?,
-    };
+    let algo = Algorithm::parse(&env::args().nth(1).unwrap())
+        .ok_or_else(|| "unknown algorithm".to_owned())?;
 
     Ok(TestResults { collection, ..run(&*input_file, algo)? })
 }
@@ -123,6 +125,7 @@ enum Algorithm {
     Sais,
     Libsais,
     Divsuf,
+    Libdivsuf,
 }
 
 impl Algorithm {
@@ -131,6 +134,17 @@ impl Algorithm {
             Algorithm::Sais => "SAIS",
             Algorithm::Libsais => "libsais",
             Algorithm::Divsuf => "divsufsort",
+            Algorithm::Libdivsuf => "libdivsufsort",
+        }
+    }
+
+    fn parse(option: &str) -> Option<Self> {
+        match &*option {
+            "--sais" => Some(Algorithm::Sais),
+            "--libsais" => Some(Algorithm::Libsais),
+            "--divsuf" => Some(Algorithm::Divsuf),
+            "--libdivsuf" => Some(Algorithm::Libdivsuf),
+            _ => None,
         }
     }
 }

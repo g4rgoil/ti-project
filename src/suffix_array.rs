@@ -89,14 +89,15 @@ where
     sais::sais(text)
 }
 
-pub fn divsufsort(text: &[u8]) -> SuffixArray<u8, u32> {
-    let mut sa = vec![0_u32; text.len()];
+pub fn divsufsort(text: &[u8]) -> SuffixArray<u8, i32> {
+    let mut sa = vec![0_i32; text.len()];
+    divsufsort::sort_in_place(text, &mut *sa);
+    SuffixArray { text, sa: sa.into_boxed_slice() }
+}
 
-    let sa_i32 = unsafe {
-        std::slice::from_raw_parts_mut(sa.as_mut_ptr() as *mut i32, text.len())
-    };
-    divsufsort::sort_in_place(text, sa_i32);
-
+pub fn libdivsufsort(text: &[u8]) -> SuffixArray<u8, i32> {
+    let mut sa = vec![0_i32; text.len()];
+    cdivsufsort::sort_in_place(text, &mut *sa);
     SuffixArray { text, sa: sa.into_boxed_slice() }
 }
 

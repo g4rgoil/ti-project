@@ -12,6 +12,7 @@ debug = true
 
 [dependencies]
 divsufsort = "2.0.0"
+cdivsufsort = "2.0.0"
 
 [build-dependencies]
 cc = "1.0"
