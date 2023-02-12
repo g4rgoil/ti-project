@@ -1,3 +1,6 @@
 [submodule "libsais"]
 	path = libsais
 	url = https://github.com/IlyaGrebnov/libsais
+[submodule "msufsort"]
+	path = msufsort
+	url = https://github.com/michaelmaniscalco/msufsort

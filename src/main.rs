@@ -89,20 +89,20 @@ pub fn main() -> Result<TestResults, String> {
                     Err("text too big for libsais".to_owned())
                 }
             },
-            Algorithm::Divsuf => {
-                if text.len() <= i32::MAX as usize {
-                    let (sa, sa_time) = run_timed(|| sa::divsufsort(text));
-                    Ok(TestResults { sa_time, algo, size: text.len(), ..run_lcp(sa) })
-                } else {
-                    Err("text too big for divsufsort".to_owned())
-                }
-            },
-            Algorithm::Libdivsuf => {
+            Algorithm::DivSuf => {
                 if text.len() <= i32::MAX as usize {
                     let (sa, sa_time) = run_timed(|| sa::libdivsufsort(text));
                     Ok(TestResults { sa_time, algo, size: text.len(), ..run_lcp(sa) })
                 } else {
                     Err("text too big for libdivsufsort".to_owned())
+                }
+            },
+            Algorithm::YutaSais => {
+                if text.len() <= i32::MAX as usize {
+                    let (sa, sa_time) = run_timed(|| sa::yuta_sais(text));
+                    Ok(TestResults { sa_time, algo, size: text.len(), ..run_lcp(sa) })
+                } else {
+                    Err("text too big for yuta-sais".to_owned())
                 }
             },
         }
@@ -124,8 +124,8 @@ enum Algorithm {
     #[default]
     Sais,
     Libsais,
-    Divsuf,
-    Libdivsuf,
+    DivSuf,
+    YutaSais,
 }
 
 impl Algorithm {
@@ -133,8 +133,8 @@ impl Algorithm {
         match self {
             Algorithm::Sais => "SAIS",
             Algorithm::Libsais => "libsais",
-            Algorithm::Divsuf => "divsufsort",
-            Algorithm::Libdivsuf => "libdivsufsort",
+            Algorithm::DivSuf => "libdivsufsort",
+            Algorithm::YutaSais => "yuta-sais",
         }
     }
 
@@ -142,8 +142,8 @@ impl Algorithm {
         match &*option {
             "--sais" => Some(Algorithm::Sais),
             "--libsais" => Some(Algorithm::Libsais),
-            "--divsuf" => Some(Algorithm::Divsuf),
-            "--libdivsuf" => Some(Algorithm::Libdivsuf),
+            "--libdivsuf" => Some(Algorithm::DivSuf),
+            "--yuta-sais" => Some(Algorithm::YutaSais),
             _ => None,
         }
     }

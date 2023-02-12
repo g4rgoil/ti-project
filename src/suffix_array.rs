@@ -101,6 +101,15 @@ pub fn libdivsufsort(text: &[u8]) -> SuffixArray<u8, i32> {
     SuffixArray { text, sa: sa.into_boxed_slice() }
 }
 
+pub fn yuta_sais(text: &[u8]) -> SuffixArray<u8, i32> {
+    let mut sa = vec![0_i32; text.len()];
+    let result = unsafe {
+        sys::sais(text.as_ptr(), sa.as_mut_ptr() as *mut i32, text.len() as i32)
+    };
+    assert_eq!(result, 0);
+    SuffixArray { text, sa: sa.into_boxed_slice() }
+}
+
 /// Represents an owned suffix array for a text. Additionally stores a reference
 /// to the original text.
 ///
